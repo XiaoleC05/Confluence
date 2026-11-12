@@ -97,7 +97,8 @@ workspace name; a model-supplied `session:` ref is authorized against the caller
 
 Naming: `confluence_*`, snake_case verb/noun, no collision with live tools, `run_code` never used
 (reserved, `dsh-tools/lib/index.js:440`). Parameter names are snake_case (the ADR §7 sketch wrote
-`replyTo`; final names below normalize it to `reply_to` — recorded as a deviation in §9).
+`replyTo` as illustrative prose; the final names below normalize it to `reply_to` — see §9,
+"Deviations from the ADR").
 
 ### 2.1 `confluence_board`
 
@@ -561,7 +562,26 @@ budgeted separately in [`pulse.md`](pulse.md) §7.
 
 ---
 
-## 9. Never do
+## 9. Deviations from the ADR
+
+ADR 0001 §7's tool table is **illustrative prose, not a schema**: it mixes camelCase parameter names
+with prose types. This document is the single source of truth for the six names, descriptions,
+parameter schemas, rendered formats and error codes; where the table and this document differ, this
+document wins and the ADR row is read as shorthand.
+
+| ADR 0001 §7 rendering | Final contract | Why |
+|---|---|---|
+| `replyTo?` | `reply_to` | One snake_case convention across all six tools, matching DSH built-ins (`file_path`, `working_directory`) and the `defineTool` author DSL. |
+| `resolves?` (type not stated) | `resolves: boolean`, on `confluence_post` only with `reply_to`, and on `confluence_reply` | The stored field is `entry.resolves` boolean ([`data-model.md`](data-model.md) §4.1); an id-valued parameter would duplicate `reply_to`. |
+| `supersedes?` | `supersedes` (board note id) | Same spelling already; meaning unchanged. |
+| no stored title cap stated | stored titles 160 chars; pulse headlines truncate to 60 chars | Owning caps: [`data-model.md`](data-model.md) §4.1 (stored) and [`pulse.md`](pulse.md) §5 (pulse truncation). Never 120. |
+| `include_resolved?` | `include_resolved` | Same convenience parameter, snake_case. |
+
+No other deviation: the six tool names, the six kinds and the `through=` marker contract match ADR 0001
+§7 and ADR 0003. ADR 0001 §8's runtime-context "replacing the previous one" wording is corrected by
+ADR 0003 §4 (append semantics); that correction belongs to ADR 0003, not here.
+
+## 10. Never do
 
 - Never accept a workspace id/path/name from the model; authority comes from `exec.agent` only.
 - Never add edit/delete/permission tools in v1; corrections are new notes + `supersedes`/`resolves`.

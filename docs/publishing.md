@@ -107,7 +107,7 @@ tarball and reported:
 | Field | Observed value |
 |---|---|
 | package | `dsh-confluence@0.1.0` |
-| packed / unpacked size | 22,677 B / 59,830 B |
+| packed / unpacked size | recorded 22,677 B / 59,830 B — **stale as of 2026-11-13 — re-record at the next release checkpoint** (current tree unpacks to 60,564 B / 9 entries) |
 | entries | **9**: `LICENSE`, `README.md`, `README.zh-CN.md`, `cordis.patch.yml`, `icon.svg`, `index.js`, `locale/en.json`, `locale/zh.json`, `package.json` |
 | dry-run shasum / integrity | `a291f81ed9ae3bf3f6497382810b7c88fd357920` / `sha512-wxgm7x3o…` (over the virtual tarball; not a published artifact) |
 | unintended files | none — no `test/`, `docs/`, `examples/`, `scripts/` or scratch state |

@@ -37,7 +37,7 @@ includes that WP's tests. Test IDs (`UT-*`, `IT-*`, `E2E-*`, `CON-*`, `SEC-*`, `
 | Target runtime | DSH Desktop **0.2.2-rc.1**, profile `desktop`, Windows 11, Node.js 22.19.0 (verified in `docs/research/dsh-internals.md`) |
 | Architecture | Three pillars: explicit Board, passive Pulse via one `systemPrompt.context`, metadata-only Ledger + on-demand Recall (ADR §2) |
 | Hard runtime constraints | Fully offline: no server, no listening port, no network call, no child process, no model call, no external DB; plain ESM + Node builtins only; client is one plain browser module using `--dsw-alias-*` tokens only (ADR §3, §4) |
-| Repository start state | `main` has design docs plus a design-stage scaffold: `package.json` (`dsh-confluence` 0.1.0, `dsh.bundle.patch`), `cordis.patch.yml` (one row, id `confluence`), `index.js` (activation-only), `locale/{en,zh}.json`, `icon.svg`, `examples/profile-patch.yml`, `.gitignore` (`.tmp/` ignored). M1 extends this scaffold; it does not restart it. |
+| Repository start state | `main` has design docs plus a design-stage scaffold: `package.json` (`dsh-confluence` 0.1.0, `dsh.bundle.patch`), `cordis.patch.yml` (one row, id `confluence`), `index.js` (activation-only), `locale/{en,zh}.json`, `icon.svg`, `examples/profile-patch.yml`, `.gitignore` (`.tmp/` ignored), and the **existing, passing** contract checks `scripts/check.mjs` (11 checks) + `test/contract.test.js` (18 tests). M1 extends this scaffold; it does not restart it. |
 | Existing lifecycle | M0 evidence lives in `docs/plan/m0-spikes.md`; M1 code lives in `lib/`; M3 client in `client.js`; M4 docs in `README.md` / `docs/install.md` / the verification doc |
 | Verification style | Crisp precedent: hermetic `node --test`, scratch-profile E2E with local stdlib mocks, a filled "what remains unverified" table, and no real-profile mutation during verification |
 | Estimate basis | 13 engineer-days total for v1 (±30 %), matching ADR §14; M0 = 1, M1 = 4, M2 = 3.5, M3 = 2.5, M4 = 2.0 |
@@ -105,7 +105,7 @@ empty pulse, store writable), pulse budget measured and recorded, and no real-pr
 
 | WP | Effort | Deliverables (files) | Depends on |
 |---|---|---|---|
-| M1.1 Scaffold extension + contract/static check | 0.5 | `package.json` (`exports`/`files` grow to `lib/`), `scripts/check.mjs`, `test/contract.test.js`, `lib/index.js` (apply wiring with `ctx.effect`), `lib/config.js` | — |
+| M1.1 Scaffold extension + contract/static check | 0.5 | `package.json` (`exports`/`files` grow to `lib/`), extend `scripts/check.mjs` + `test/contract.test.js` (both already exist and pass), `lib/index.js` (apply wiring with `ctx.effect`), `lib/config.js` | — |
 | M1.2 JournalStore (append, merge, torn line, poll/watch) | 0.75 | `lib/store/journal.js`, `lib/store/ids.js` (ULID, writerId), `lib/store/merge.js`, `test/store/*.test.js` | M1.1 |
 | M1.3 WorkspaceResolver | 0.5 | `lib/workspace.js`, `test/workspace.test.js` | M1.1 |
 | M1.4 Board model / records / caps | 0.5 | `lib/board.js`, `lib/records.js`, `test/board.test.js` | M1.2 |
@@ -113,20 +113,21 @@ empty pulse, store writable), pulse budget measured and recorded, and no real-pr
 | M1.6 PulseProvider + welcome digest | 0.5 | `lib/pulse.js`, `lib/pulse-template.js`, `test/pulse/*.test.js`, measured budget note in `docs/design/pulse.md` | M1.2–M1.5 |
 | M1.7 Watermark projection (`digestSeq`, `boardReadSeq`) | 0.5 | `lib/watermark.js`, `lib/projection.js`, `test/watermark.test.js` | M1.2, M1.6 |
 
-- **M1.1** Extend the existing scaffold (do not replace it); add `lib/` to `exports`/`files`; write
-  `scripts/check.mjs` (manifest + single `confluence` patch row, locale `meta.title|description`, icon
-  validity/size, no static `@deepseek-ai/*` imports, no `node:http|https|net|dgram`/URL literals in
-  runtime files); add `test/contract.test.js`; `apply()` validates config and registers nothing else.
-- **M1.2** `writerId = <pid>-<random>` per mount; one shard `journal.<writerId>.v1.jsonl`; append
-  complete lines ≤64 KiB via an `O_APPEND` fd; `seq` = time-sortable ULID; merge all `*.jsonl` sorted
-  lexicographically, dedupe by `id` (**entry first-wins, `session` last-wins**), ignore a trailing
-  line without `\n`; batched `fsync` ~1 s + at session events, and a board post forces fsync before
-  acknowledging; poll `store.pollMs` (4000); `fs.watch` debounced 300–500 ms, try/catch-wrapped;
-  `EACCES/EBUSY/EPERM` or a network path → polling + warning, never crash.
-- **M1.3** `header.cwd` → `fs.realpath` → win32 lower-case fold → `sha256` → `ws_<16 hex>`; freeze per
-  session id at first observation; fall back to `ctx.workingDirectory.get(session)` only when the
-  header has no `cwd`; persist `{wsKey, canonicalPath, label, firstSeenAt}`; unresolved → no key
-  (no tools via `options.when`, no pulse text).
+- **M1.1** Extend the existing scaffold (not replace); add `lib/` to `exports`/`files`; extend the
+  existing `scripts/check.mjs` and `test/contract.test.js` (manifest/patch row/locale/icon checks, no
+  static DSH imports, no network modules or URL literals in runtime files); `apply()` validates config
+  and registers nothing else.
+- **M1.2** `writerId = <pid>-<8 lowercase hex>` per mount; one shard `journal.<writerId>.v1.jsonl`;
+  append complete lines ≤64 KiB through a held `O_APPEND` fd + `fs.writeSync`; `seq` = time-sortable
+  ULID; merge all `*.jsonl` sorted lexicographically, dedupe by `id` (**entry first-wins, `session`
+  last-wins**), ignore a trailing line without `\n`; batched `fsync` ~1 s + at session events, and a
+  board post forces fsync before acknowledging; poll `store.pollMs` (4000); `fs.watch` debounced
+  300–500 ms, try/catch-wrapped; `EACCES/EBUSY/EPERM` or a network path → polling + warning, never crash.
+- **M1.3** `header.cwd` → `fs.realpath` → win32 lower-case fold → `sha256` → `ws_<16 hex>`; freeze the
+  key per session id at first observation; fall back to `ctx.workingDirectory.get(session)` only when
+  the header has no `cwd`; first mount creates `MANIFEST.v1.json.workspace` =
+  `{key, canonicalPath, createdAt}` (`wx`, data-model §4.7); `label` is resolved live at render and
+  never stored; unresolved → no key (no tools via `options.when`, no pulse text).
 - **M1.4** Entry shapes `finding|decision|gotcha|question|handoff|warning`; title/body/tags/files
   validation + caps (`maxBodyBytes` 8192, `maxEntriesPerWorkspace` 2000); `reply_to`, `resolves`,
   `supersedes`; unread/open-question/handoff/count queries; never edit in place.
@@ -173,9 +174,9 @@ isolation evidence committed.
 - **M2.3** `confluence_reply` appends a reply or `resolves`/reopens; `confluence_search` filters by
   text/tag/kind/limit; `confluence_recall` = `listSessions()` → canonicalize each `header.cwd` → same
   workspace, caller excluded → `filterEvents(id, [{kind:'text', text}])` → ≤3 sessions, ≤5 hits,
-  ≤600-char excerpts, provenance `session:<id>:<seq>`, "literal match only; partial" note, cooperative
-  5 s timeout with partial marking; `confluence_read` expands `session:<id>:<seq>` via `readEvent`
-  (≤3 events); never runs in the pulse provider.
+  ≤600-char excerpts, provenance `session:<id>:<seq>`, "literal match only; partial", cooperative 5 s
+  timeout with partial marking; `confluence_read` expands `session:<id>:<seq>` via `readEvent` (≤3
+  events); private/disabled targets excluded and refs not-found (UT-RECALL-06); never in the pulse provider.
 - **M2.4** Redaction patterns (API keys/tokens/PEM/password assignments/JWT/known prefixes) from
   `privacy.redactPatterns`/defaults over titles, bodies, tags, paths and recall output; `redactTitles`
   true by default; `privateSessions` → scoped `suppressRuntimeContext()` + no ledger rows;
@@ -400,7 +401,7 @@ C=contract/static, S=security, P=perf, UI=UI. `M` column = milestone where the t
 | 2.1 | Board: append-only typed notes, threads, resolution, provenance | UT-BOARD-01..06, IT-03 | U,I | M1/M2 |
 | 2.2 | Pulse reaches every agent step with no user/agent action | E2E-01, IT-04 | E,I | M2 |
 | 2.2 | Pulse costs zero tokens when unchanged (no new messages) | UT-PULSE-02, E2E-02 | U,E | M1/M2 |
-| 2.3 | Ledger is metadata-only; recall is on-demand, read-only, literal | UT-LEDGER-01..04, UT-RECALL-01..05, IT-06 | U,I | M2 |
+| 2.3 | Ledger is metadata-only; recall is on-demand, read-only, literal, excludes private/disabled targets | UT-LEDGER-01..04, UT-RECALL-01..06, IT-06 | U,I | M2 |
 | 4 | Component ownership: plain ESM + Node builtins; no hard `@deepseek-ai/*` imports; client plain module | CON-02, CON-03 | C | M1/M3 |
 | 5 | Workspace key = canonical `header.cwd`, win32 fold, frozen, fallback | UT-WS-01..06, ISO-01 | U,I | M1 |
 | 5 | Absolute per-workspace isolation; no-key sessions get no tools/pulse | ISO-01..04, UT-TOOL-08 | I,U | M2 |
@@ -419,9 +420,9 @@ C=contract/static, S=security, P=perf, UI=UI. `M` column = milestone where the t
 | 8.1 | Split log-derived watermarks (`confluence_watermark`: pulse section `seq` + `through=` markers) survive resume/fork/garbage | UT-WM-01..06, E2E-05 | U,E | M1/M2 |
 | 8.1 | Fallback watermark when `sessionProjections` absent | UT-WM-07, IT-07 | U,I | M2 |
 | 9 | Ledger live-first: turn/tool/PTC parsed; ≤8 paths; no content | UT-LEDGER-01..04 | U | M2 |
-| 9 | Recall caps: ≤3 sessions, ≤5 hits, ≤600 chars, 5 s cooperative timeout | UT-RECALL-01..05, PERF-03 | U,P | M2 |
+| 9 | Recall caps: ≤3 sessions, ≤5 hits, ≤600 chars, 5 s cooperative timeout; private/disabled target exclusion (UT-RECALL-06) | UT-RECALL-01..06, PERF-03 | U,P | M2 |
 | 10 | Config: defensive defaults, bad values fall back + warning | UT-CONFIG-01..03 | U | M1 |
-| 11 | Workspace is the consent boundary; private/disabled opt-outs | ISO-04, UT-PRIV-01..03 | I,U | M2 |
+| 11 | Workspace is the consent boundary; private/disabled opt-outs (incl. recall target exclusion) | ISO-04, UT-PRIV-01..03, UT-RECALL-06 | I,U | M2 |
 | 11 | Best-effort redaction stored/rendered/recall/export | UT-REDACT-01..06, SEC-03 | U,S | M2/M4 |
 | 11 | Journal field allow-list (no prompts/assistant/tool output) | SEC-02 | U,S | M2 |
 | 11 | No egress: no network modules/URLs/sockets; no extra port | SEC-04, E2E-06 | C,E | M3/M4 |

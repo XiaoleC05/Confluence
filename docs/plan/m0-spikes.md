@@ -185,41 +185,55 @@ access and keep ledger parsing tolerant (`tool/call` ∪ `tool/ptc-dispatch`); i
 unreachable under the *default* preset, propose a preset-scoped registration or a `/confluence`
 command path (ADR amendment) — do not ship a "model-facing tool" nobody can call.
 
-## 6. Spike S4 — journal append and torn line on Windows
+## 6. Spike S4 — journal writer (O_APPEND fd + writeSync), torn line and fsync on Windows
 
 | Field | Value |
 |---|---|
-| Question | Do per-writer `fs.appendFile` shards remain line-intact under concurrent appends on this Windows machine, is a torn trailing line tolerated and recovered, and is append fast enough for the design budget? |
-| `HYPOTHESIS:` | Shards + complete-line appends are safe; torn trailing line is ignored; p95 append <10 ms on local NTFS. |
+| Question | Do per-writer shards written through the normative writer — a **held `O_APPEND` fd + `fs.writeSync` of whole LF-terminated lines**, batched fsync at ~1 s/session events and fsync-before-ack for board posts (ADR-0001 E10, store-format §13) — stay line-intact under concurrent writers on Windows, is a torn trailing line tolerated and recovered, and does the durability policy hold? |
+| `HYPOTHESIS:` | Complete-line `writeSync` to an `O_APPEND` fd is not split or interleaved; torn tail ignored; batched fsync + board-post fsync-before-ack give the stated durability; p95 append <10 ms on local NTFS. |
 | Blocks | M1.2 (JournalStore) |
 | Timebox | 60 min |
 
 **Method** — write `.tmp/m0/s4/append-probe.mjs` (throwaway; its assertions later become real
-`test/store` cases):
+`test/store` cases). The writer under test is the design's normative writer, **not** `fs.appendFile`:
 
-1. Two writer processes (spawned **by the test harness only** — the plugin never spawns) append
-   1 000 lines each, `{v:1,type:'probe',id,seq,pad}`, 1–4 KiB per line, to
-   `journal.<writerId>.v1.jsonl` in one workspace dir.
-2. Parent merges all `*.jsonl` sorted lexicographically by `seq`; assert 2 000 unique ids, zero
-   malformed lines, monotone order, and byte-identical re-merge on a second read.
-3. Torn line: one process opens a shard fd, writes ~100 bytes of an incomplete JSON object (no `\n`),
-   exits; reader must ignore the tail; a later complete append is then visible; a second read is stable.
-4. Same-process concurrency: 100 `Promise.all(fs.appendFile)` calls each a complete line; assert no
-   interleaving/corruption (record whether Node serialized them; this informs the writer design).
-5. Measure 200 sequential appends of 1–4 KiB: median/p95/p99; record filesystem type
-   (`Get-Volume`/`fsutil fsinfo volumeinfo` for the drive) and whether a network drive was involved.
-6. Path edge cases: store dir with spaces and a CJK name; confirm `fs.realpath`/append/merge all work.
+1. Implement the probe writer exactly as specified: open the shard once per process with
+   `fs.openSync(path, 'a')` (O_APPEND), serialize each record to one LF-terminated Buffer, then
+   `fs.writeSync(fd, buf)`; record the returned byte count and assert it equals `buf.length` (loop on a
+   short write; a design-level short write would need a rule). Batched `fs.fsyncSync` at ~1 s/session
+   events; the board-post path calls `fsyncSync` **before** acknowledging.
+2. Two writer processes (spawned **by the test harness only** — the plugin never spawns) write
+   1 000 lines each (`{v:1,type:'probe',id,seq,pad}`, 1–4 KiB per line) to their own
+   `journal.<writerId>.v1.jsonl` shards. Parent merges all `*.jsonl` sorted lexicographically by `seq`;
+   assert 2 000 unique ids, zero malformed lines, no split/interleaved bytes (every line is valid JSON
+   and its pad length survives), monotone order, and byte-identical re-merge on a second read.
+3. Interleaving probe: one process alternates `writeSync` of whole lines with timers/async work while a
+   second process appends its own shard; assert no partial/interleaved line appears in either file and
+   no line exceeds the 64 KiB cap.
+4. Torn line (crash simulation): the writer opens the fd, `writeSync`s ~100 bytes of an incomplete JSON
+   object (no `\n`) and exits without a further write; the reader must ignore the tail; a later complete
+   append is visible; a second read is stable.
+5. fsync/durability: measure `fsyncSync` cost per batch (1/10/100 lines) and confirm the board-post
+   path orders `writeSync` → `fsyncSync` → ack (probe log/timestamps); record the batched-fsync window
+   and the observed durability boundary (what may be lost on crash) against the design's stated policy.
+6. Timing: 200 sequential 1–4 KiB appends — median/p95/p99 for raw append and for the
+   fsync-before-ack path; record filesystem type (`Get-Volume`/`fsutil fsinfo volumeinfo`).
+7. Path edge cases: store dir with spaces and a CJK name; confirm the O_APPEND writer works and
+   `fs.realpath`/merge still behave.
 
-**Evidence:** corruption/duplicate/malformed counts; merged-line counts; torn-line read outputs
-(before/after recovery); timing table; volume info; command lines.
+**Evidence:** full-length `writeSync` results; corruption/duplicate/malformed/short-write counts;
+interleaving and torn-line read outputs (before/after recovery); fsync batch timings + ack ordering;
+timing table; volume info; command lines.
 
-**Pass criteria:** zero corruption across 2 000 lines; torn tail ignored and recovery works; p95
-append <10 ms on local NTFS; re-merge deterministic. **Fail criteria:** interleaved lines, crashes on
-`appendFile`, torn line poisons the read, or p95 >25 ms.
+**Pass criteria:** zero split/interleaved/malformed lines across 2 000 lines; torn tail ignored and
+recovery works; board-post fsync-before-ack ordering observed; batched fsync follows the stated policy;
+p95 raw append <10 ms on local NTFS; re-merge deterministic. **Fail criteria:** partial writes without a
+rule, interleaved lines, board ack before fsync, torn line poisons the read, or p95 >25 ms.
 
-**Fallback design:** per-append `fsync` + post-append length validation; if the store path is a
-network/USB drive, open read-only for readers with a single visible activation warning (ADR §6
-degradation rule); never add a cross-process lock to the hot path.
+**Fallback design:** if short/partial writes appear, loop `writeSync` over the remaining buffer and
+fsync per line before ack; if the store path is a network/USB drive, open read-only for readers with a
+single visible activation warning (ADR §6 degradation rule); never add a cross-process lock to the hot
+path.
 
 ## 7. Spike S5 — multi-window / multi-process topology
 

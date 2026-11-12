@@ -29,9 +29,10 @@ cross-process lock (`dsh-storage-domain/README.md:146`, `dsh-storage-json/README
    Each line carries schema version `v`, a type, the workspace key, a time-sortable ULID `seq` and
    an ISO timestamp (ADR 0001 §6; [`data-model.md`](../design/data-model.md)).
 3. **Concurrency:** one writer per shard. `journal.<writerId>.v1.jsonl` per plugin mount
-   (`writerId = <pid>-<random>`), appended via an `O_APPEND` fd; no lock on the hot path. Readers
-   merge all shards, sort by `seq`, dedupe by id (`entry` first-wins, `session` last-wins). A mount
-   always mints a new writer id, so a crashed writer's shard is sealed and never appended to again.
+   (`writerId = <pid>-<8 lowercase hex>`), appended via an `O_APPEND` fd; no lock on the hot path.
+   Readers merge all shards, sort by `seq`, dedupe by id (`entry` first-wins, `session` last-wins). A
+   mount always mints a new writer id, so a crashed writer's shard is sealed and never appended to
+   again.
 4. **Durability:** batched fsync at ~1 s and at session events; board posts force an fsync before
    acknowledging. A process crash may lose the last ≤1 s of appends; an OS crash may lose appends
    since the last fsync. Torn trailing lines are ignored by readers and never repaired.

@@ -192,8 +192,8 @@ action, M4): `<workspace>/.confluence/export/`, resolved from the canonical work
   manifest.json         # version/pointer envelope; written LAST, atomically
 ```
 
-Only `memories.v1.jsonl` is promised to `solo-bench`; `manifest.json` is its version and integrity
-envelope (architecture.md open-question resolution Q5).
+Only `memories.v1.jsonl` is promised; `manifest.json` is its version/integrity envelope (architecture
+Q5); the store's own `MANIFEST.v1.json` (store-format §15) is a different, profile-local, never-exported file.
 
 ### 6.1 `manifest.json` (schema authority: `confluence.memories/v1`)
 
@@ -219,8 +219,8 @@ envelope (architecture.md open-question resolution Q5).
 | `producer` | Diagnostics only (`name`, `version`, `dsh`); never feature-gate on version strings |
 | `workspace.wsKey` / `name` | Workspace key + display label. **No absolute/home paths anywhere in the export** (ADR §11); the consumer already knows the workspace it asked about |
 | `generatedAt` | RFC 3339 UTC; the only non-deterministic manifest field (see §6.3); surface it as "export age" |
-| `recordCount` / `firstSeq` / `lastSeq` | Integrity range of the **live** exported entries; tombstone stubs are excluded from these counts (Lead ruling) and validated separately (see §6.2) |
-| `files[0]` (`name`/`bytes`/`sha256`) | Exactly `memories.v1.jsonl`; verify byte size and SHA-256 **before** parsing |
+| `recordCount` / `firstSeq` / `lastSeq` | Cover **live (non-stub) records only**; tombstone stubs are excluded from these counts (Lead ruling) and validated separately. Consumer rule: count non-stub lines after parsing and require equality with `recordCount` |
+| `files[0]` (`name`/`bytes`/`sha256`) | Exactly `memories.v1.jsonl`; `bytes`/`sha256` cover the **complete file including tombstone stubs** — verify before parsing |
 | `redaction.applied` / `policy` | `true` = best-effort redaction ran (`confluence.redact/v1`); a marker, never a guarantee of safety |
 | `limits.truncated` / `maxEntriesPerWorkspace` | `truncated:true` iff a cap prevented a complete export; `maxEntriesPerWorkspace` is the 2000 cap. Surface truncation to the user |
 
@@ -259,9 +259,15 @@ manifest `generatedAt`/`files[].sha256`.
 **Tombstone stubs.** A tombstoned entry is still exported, as a content-free stub: `deleted:true`,
 `deletedAt` set, `title:""`, `body:""`, no `tags`/`files`, `author` reduced to `{sessionId, origin}`.
 Stubs are sorted in the same stream but excluded from `recordCount`/`firstSeq`/`lastSeq` and from all
-consumer views/counts (Lead ruling — the workbench can show removal history without recovering removed
-text; replies under a tombstoned thread root are not exported). Export v1 contains only `entry`
-records: no ledger rows, no presence/status, no prompts, no assistant/tool text, no store metadata.
+consumer views/counts (the workbench can show removal history without recovering removed text; replies
+under a tombstoned thread root are not exported). Export v1 contains only `entry` records: no ledger
+rows, no presence/status, no prompts, no assistant/tool text, no store metadata.
+
+**Integrity rule (single definition, mirrored by store-format §14/§17):** `files[0].bytes`/`sha256`
+cover the complete `memories.v1.jsonl` **including tombstone stubs**; `recordCount`/`firstSeq`/`lastSeq`
+cover live records only. A consumer verifies bytes/hash first, then parses lines, then requires
+non-stub line count == `recordCount` (stub lines are valid lines, just counted out). Never use a raw
+line count as `recordCount`.
 
 ### 6.3 Determinism and atomicity rules
 
@@ -363,11 +369,13 @@ type Author struct{ SessionID, Title, Origin string }
 6. Tombstone handling: for `deleted:true` records require `deletedAt` set, `title`/`body` empty, and
    no `tags`/`files` (content-free stub); exclude them from lists and counts by default. For
    `deleted:false` require a non-empty `title` and `deletedAt == null`.
-7. Integrity against the manifest: number of **live** (`deleted:false`) records == `recordCount`;
-   `firstSeq`/`lastSeq` equal the min/max `seq` among live records (skip when `recordCount == 0`);
-   records sorted by `(seq, id)` (if not, sort defensively and report the discrepancy);
-   `limits.truncated` and `redaction.applied` are surfaced, never trusted as complete/safe. Any
-   mismatch refuses the export.
+7. Integrity against the manifest (single rule, see §6.2): `files[0].bytes`/`sha256` cover the complete
+   file including stubs (verified in step 3); number of **live** (`deleted:false`) records ==
+   `recordCount`; `firstSeq`/`lastSeq` equal the min/max `seq` among live records (skip when
+   `recordCount == 0`); stub lines are valid lines but counted out — never compare the raw line count to
+   `recordCount`. Records sorted by `(seq, id)` (if not, sort defensively and report the discrepancy);
+   `limits.truncated`/`redaction.applied` are surfaced, never trusted as complete/safe. Any mismatch
+   refuses the export.
 8. Render: human table (kind, short id, title clipped, author/session title, `ts`) and `--json` mode
    matching the existing solo-bench convention; `--include-deleted` shows tombstone stubs (title empty,
    marked deleted); body previews clipped (e.g. 120 chars) unless `show`; `files`/`tags` are
@@ -420,8 +428,10 @@ behavior and no external program; adding a fifth fixed-row service would break t
 
 Confluence side (M4, in-repo): `EXP-01..05` prove deterministic JSONL bytes, manifest
 `files[0]` hash/byte and `recordCount`/`firstSeq`/`lastSeq` consistency, redaction/no-absolute-paths,
-tombstone-stub export, atomic publish, opt-in behavior. The fixtures under `test/fixtures/export/` are
-the canonical examples (`schema:"confluence.memories/v1"`, `formatVersion:1`, `cnf_` ids).
+tombstone-stub export, atomic publish, opt-in behavior. The `export/integrity-stubs/` fixture in
+[testing.md](testing.md) §11 fixes the V7 rule: hash/bytes over the complete file, counts over live
+records only, stub lines valid but counted out. The canonical examples live under
+`test/fixtures/export/` (`schema:"confluence.memories/v1"`, `formatVersion:1`, `cnf_` ids).
 
 `solo-bench` side (future phase): table-driven Go tests against small `testdata/confluence/` fixtures
 copied from the Confluence fixtures at merge time (vendored subtree paths are not stable test inputs):

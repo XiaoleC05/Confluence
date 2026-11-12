@@ -478,19 +478,34 @@ Mapping from stored records to export records:
   `resolves:true` (boolean, stored per data-model §4.1) → `resolves: <replyTo id>` (the entry it
   resolves); `resolves:false` → `resolves: null`; absent `replyTo`/`supersedes` → `null`.
 - A tombstoned entry → content-free stub: `deleted:true`, `deletedAt`, `title:""`, `body:""`, no
-  `tags`/`files`, `author` reduced to `{sessionId, origin}`. The workbench can show removal history
-  without recovering removed text; a tombstoned thread root's replies are not exported.
+  `tags`/`files`, `author` reduced to `{sessionId, origin}`. The hit is not recoverable and the
+  workbench can show removal history. The stub line is part of the file and of
+  `files[0].bytes`/`sha256`, but **excluded** from `recordCount`/`firstSeq`/`lastSeq` (integrity
+  contract below). A tombstoned thread root's replies are not exported.
 - Only `entry` records are exported in v1: no ledger rows, no presence, no store metadata, no
   prompts, no assistant/tool text, no absolute paths. The redaction/allow-list pass runs again on
   export (`data-model.md` §8.3).
 
 Determinism/atomicity rules: `generatedAt` is the only non-deterministic manifest field;
 `memories.v1.jsonl` is written temp+fsync+rename, then `manifest.json` temp+fsync+rename **last**;
-`recordCount`/`firstSeq`/`lastSeq`/`files[].sha256` must match the JSONL or consumers reject the
-export; `limits.truncated` is `true` iff a cap prevented a complete export; `redaction.applied` is a
-marker, never a guarantee of safety. The plugin never reads the export back. Within
-`confluence.memories/v1`, additive optional fields only; a breaking change bumps `formatVersion` and
-the file names (`memories.v2.jsonl`, `manifest.json` with `formatVersion:2`).
+`limits.truncated` is `true` iff a cap prevented a complete export; `redaction.applied` is a marker,
+never a guarantee of safety. The plugin never reads the export back. Within `confluence.memories/v1`,
+additive optional fields only; a breaking change bumps `formatVersion` and the file names
+(`memories.v2.jsonl`, `manifest.json` with `formatVersion:2`).
+
+**Export integrity contract (V7 resolution — canonical, one reading only).**
+
+- `recordCount` = number of **live (non-stub)** entry records in `memories.v1.jsonl`.
+- `firstSeq`/`lastSeq` = min/max `seq` among those live records only (`null` when the live set is
+  empty).
+- `files[0].bytes` and `files[0].sha256` cover the **complete file, including tombstone stubs**.
+- Consumer verification order: (1) validate `schema`/`formatVersion`; (2) verify `files[0]` size and
+  SHA-256 over the whole file; (3) parse every line (stub lines are valid records with
+  `deleted:true`); (4) check that the non-stub line count equals `recordCount` and that the live-set
+  `seq` range equals `firstSeq`/`lastSeq`. A mismatch invalidates the export.
+- A naive `line count == recordCount` check is **wrong by design**; tombstone stubs are valid file
+  content but are not counted or sequenced in the manifest. A tombstone-free export has
+  `recordCount == line count`, which is the only case where the naive check happens to pass.
 
 ## 15. Manifest `MANIFEST.v1.json` (store metadata, not export)
 
@@ -632,10 +647,14 @@ import; the no-egress/static test below enforces that).
     reader still correct from shards; next compaction cleans up.
 27. Prune safety: a shard whose size changed after the published snapshot is not deleted (simulated
     append after publish) — record survives.
-28. Export twice over an unchanged store → identical `memories.v1.jsonl` bytes; `manifest.json`
-    differs only in `generatedAt`/`files[].sha256`; ordering is `(seq,id)`; tombstoned entries appear
-    only as `deleted` stubs; all paths workspace-relative; field allow-list holds; `recordCount`/
-    `firstSeq`/`lastSeq`/`files[].sha256` match the JSONL.
+28. Export integrity with tombstones (V7): build a store with N live entries and ≥1 tombstoned
+    entry → `memories.v1.jsonl` contains N live lines plus content-free stubs; `recordCount == N`;
+    `firstSeq`/`lastSeq` span only the N live records; `files[0].bytes`/`sha256` hash the **complete**
+    file (stubs included); the §14 verify-then-parse-then-count procedure accepts the export, while a
+    naive `line count == recordCount` check would reject it — the test asserts the procedure, never
+    the naive check. Also: export twice over an unchanged store → identical bytes; `manifest.json`
+    differs only in `generatedAt`/`files[0].sha256`; ordering `(seq,id)`; paths workspace-relative;
+    field allow-list holds.
 29. Export refuses a rooted/`..` `export.dir` (workspace-relative only, ADR 0001 §17 E3), refuses to
     write inside the store root, and never writes partial files (temp+rename verified; a kill between
     the two renames leaves no new manifest or a mismatched one, both detectable).
@@ -667,7 +686,12 @@ import; the no-egress/static test below enforces that).
 39. Export-schema fixture test: `manifest.json` carries `schema:"confluence.memories/v1"` and
     `formatVersion:1`; every `memories.v1.jsonl` line carries `v:1` + `schema:"confluence.memories/v1"`,
     the optional-null field set, `cnf_` board ids, `author` provenance, and no absolute paths —
-    validated against the consumer rules for `confluence.memories/v1`.
+    validated against the consumer rules for `confluence.memories/v1`. The fixture includes one
+    tombstone stub and asserts the V7 split: `recordCount` counts only non-stub records, while
+    `files[0].bytes`/`sha256` cover the whole file including the stub.
+40. V7 regression guard: an export with at least one tombstone stub fails a bare
+    `line count == recordCount` assertion and passes the §14 verify→parse→count procedure; a future
+    edit that redefines `recordCount` to line count, or hashes only live lines, fails this test.
 
 ## 18. Open questions
 

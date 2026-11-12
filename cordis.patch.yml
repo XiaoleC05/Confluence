@@ -94,6 +94,10 @@
           privateSessions: []
           # Canonical workspace keys or paths that stay entirely opt-out.
           disabledWorkspaces: []
+          # Custom redaction regex sources applied after the built-in secret
+          # patterns (design/config.md §2.4; addition beyond ADR §10). Built-ins
+          # cannot be disabled. Invalid patterns are dropped with a warning.
+          redactPatterns: []
 
         # UI: read-only panel (M3). No effect at design stage.
         ui:

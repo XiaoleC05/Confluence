@@ -105,6 +105,7 @@ const DEFAULTS = {
     denyPathPatterns: ['**/.env*', '**/*.pem'],
     privateSessions: [],
     disabledWorkspaces: [],
+    redactPatterns: [],
   },
   ui: { enabled: true, pollMs: 5000 },
   export: { enabled: false, dir: '.confluence/export' },
@@ -270,6 +271,7 @@ test('cordis.patch.yml carries the complete ADR §10 default configuration', () 
     'redactTitles: true',
     'privateSessions: []',
     'disabledWorkspaces: []',
+    'redactPatterns: []',
     'enabled: false',
     "dir: '.confluence/export'",
     "logFile: ''",
@@ -359,6 +361,11 @@ test('index.js exports name/apply/defaults and does not use the service-class fo
   assert.equal(typeof module.resolveConfig, 'function')
   assert.equal(typeof module.DEFAULTS, 'object')
   assert.equal(Object.isFrozen(module.DEFAULTS), true, 'DEFAULTS must stay frozen')
+  assert.deepEqual(
+    module.DEFAULTS.privacy.redactPatterns,
+    [],
+    'privacy.redactPatterns must default to [] (V3: keeps patch/defaults/tests in sync)',
+  )
   assert.deepEqual(JSON.parse(JSON.stringify(module.DEFAULTS)), DEFAULTS)
 })
 

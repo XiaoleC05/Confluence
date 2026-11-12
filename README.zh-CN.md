@@ -160,7 +160,7 @@ D:\05_Code\Confluence\
 ```
 
 目前没有 `lib/`、没有 `client.js`、没有构建步骤：v1 宿主计划使用纯 ESM JavaScript 且只依赖 Node
-内置模块，客户端半身在 M3 才加入。空的 `src/` 目录为后续实现预留，不属于今天的 bundle。
+内置模块，客户端半身在 M3 才加入。计划中的 M1 结构会在 `lib/` 下实现宿主；上面列出的文件之外目前都不随包发布。
 
 ---
 
@@ -197,7 +197,7 @@ D:\05_Code\Confluence\
 - [测试计划](docs/design/testing.md)：验收标准与验证计划。
 - [solo-bench 集成](docs/design/solo-bench-integration.md)：导出契约与合并路径。
 - [执行计划](docs/plan/execution-plan.md)：里程碑计划与归属。
-- [M0 探针](docs/plan/m0-spikes.md)：M0 探针清单与结果。
+- [M0 探针](docs/plan/m0-spikes.md)：M0 探针规格；未执行（结果待填）。
 - ADR [0002 — 存储格式](docs/adr/0002-store-format-and-concurrency.md)、
   [0003 — 脉动与水位](docs/adr/0003-pulse-and-watermarks.md)、
   [0004 — 隐私](docs/adr/0004-privacy-and-consent.md)、[0005 — UI 通道](docs/adr/0005-ui-transport.md)、
@@ -279,7 +279,7 @@ node scripts/check.mjs          # 同样的检查，独立脚本并输出汇总
 | **M1 — 核心** | Journal store、工作区解析、看板记录、`confluence_board`/`post`/`read`、脉动 + 欢迎摘要、projection 水位、单元测试。 | 计划中（4 天） |
 | **M2 — 协作** | 实时账本 + presence、`reply`/`search`/`recall`、脱敏与上限、私有/退出、临时 profile 离线 E2E。 | 计划中（3.5 天） |
 | **M3 — 面板** | 只读 UI、locale、数据通道决策、标记已读/退出、无出网测试；**安装验证**。 | 计划中（2.5 天） |
-| **M4 — 加固** | 压缩/导出 + manifest、文档/发布验证、浸泡与并发测试、徽标/自定义卡片、solo-bench 集成文档。 | 计划中（2 天） |
+| **M4 — 加固** | 压缩/导出 + manifest、文档/发布验证、浸泡与并发测试、solo-bench 集成文档。徽标、自定义卡片与 composer 界面推迟到 **v0.1.1**（已签署确认）。 | 计划中（2 天） |
 
 v1 总规模约 **13 工程师日**（±30%），见 [ADR §14](docs/adr/0001-confluence-architecture.md)。
 v2（可选）：以精确率/召回率评估为门槛的确定性"轻量捕获"信号——不属于 v1。

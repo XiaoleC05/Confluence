@@ -106,7 +106,7 @@ parsing it; an unparseable `ts` makes the line invalid (§8).
 
 ### 2.5 Writer id
 
-`writerId = "<pid>-<8 lowercase hex>"`, e.g. `24188-9f3ac210`. One writer id per plugin mount
+`writerId = <pid>-<8 lowercase hex>`, e.g. `24188-9f3ac210`. One writer id per plugin mount
 (unique per process instance), safe as a filename component: `^[0-9]{1,10}-[0-9a-f]{8}$`.
 A process must never append to a shard whose `writerId` it did not mint; after restart a fresh
 `writerId` starts a fresh shard (ADR 0001 §6).
@@ -529,7 +529,7 @@ A tombstone for the question (cascades to its reply at read time):
 ```
 
 A presence heartbeat (`presence/24188-9f3ac210.json`) and the workspace metadata block of a
-manifest are shown in §4.6/§4.7; the full manifest is in [`store-format.md`](store-format.md) §12.
+manifest are shown in §4.6/§4.7; the full manifest is in [`store-format.md`](store-format.md) §15.
 
 ## 11. Open questions
 

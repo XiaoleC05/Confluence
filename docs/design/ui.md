@@ -165,12 +165,12 @@ the listed ones are required. Caps are server-enforced. `warnings` is a `string[
                "lastSeenSec": 3 } ],                                          // ≤8
   "board": { "total": 12, "openQuestions": 2, "openHandoffs": 1, "unread": 3,
              "headSeq": "01J…", "hiddenOlder": 4 },
-  "entries": [ { "id": "n-8f2a1c", "seq": "01J…", "kind": "gotcha",
+  "entries": [ { "id": "cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD", "seq": "01J…", "kind": "gotcha",
                  "title": "Windows rename retries wrap in EPERM", "bodyPreview": "…", // ≤240
                  "author": { "sessionId": "…", "title": "Auth work" },
                  "createdAt": "2026-11-13T03:55:00.000Z", "replyCount": 2, "resolved": false,
                  "tags": ["windows"], "files": ["src/win/rename.ts"] } ],       // ≤30 (max 50)
-  "openItems": [ { "id": "n-…", "kind": "question|handoff", "title": "…",
+  "openItems": [ { "id": "cnf_01JBQ8Z4K2V7R3N5T6X1Y8M0PQ", "kind": "question|handoff", "title": "…",
                    "author": { "title": "…" }, "createdAt": "…", "replyCount": 0 } ],
   "audit": [ { "ts": "2026-11-13T03:59:00.000Z", "sessionTitle": "schema-migration",
                "query": "fixture timeout", "hitCount": 3 } ],                 // ≤20
@@ -178,10 +178,10 @@ the listed ones are required. Caps are server-enforced. `warnings` is a `string[
 
 // confluence.entry { workspaceKey, id }
 { "protocol": "…",
-  "entry": { "id": "…", "seq": "…", "kind": "…", "title": "…", "body": "…",      // ≤maxBodyBytes
+  "entry": { "id": "cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD", "seq": "…", "kind": "…", "title": "…", "body": "…",      // ≤maxBodyBytes
              "author": { "sessionId": "…", "title": "…" }, "createdAt": "…",
-             "tags": [], "files": [], "resolved": false, "supersedes": "n-…|null" },
-  "replies": [ { "id": "…", "seq": "…", "body": "…", "author": { "title": "…" },
+             "tags": [], "files": [], "resolved": false, "supersedes": "cnf_01JBQ8Z4K5H9T2R6N4X7C0W8FD|null" },
+  "replies": [ { "id": "cnf_01JBQ8Z4K3M8S4P6V7W2Z9N1RT", "seq": "…", "body": "…", "author": { "title": "…" },
                  "createdAt": "…", "resolves": false } ] }                      // ≤50
 
 // confluence.search { workspaceKey, query, kinds?, tags?, limit? }   (board only, no logs)

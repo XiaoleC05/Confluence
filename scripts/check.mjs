@@ -93,6 +93,7 @@ const DEFAULTS = {
     denyPathPatterns: ['**/.env*', '**/*.pem'],
     privateSessions: [],
     disabledWorkspaces: [],
+    redactPatterns: [],
   },
   ui: { enabled: true, pollMs: 5000 },
   export: { enabled: false, dir: '.confluence/export' },
@@ -244,6 +245,7 @@ check('patch: exactly one confluence row, full ADR §10 defaults, no !!js', () =
     'redactTitles: true',
     'privateSessions: []',
     'disabledWorkspaces: []',
+    'redactPatterns: []',
     'enabled: false',
     "dir: '.confluence/export'",
     "logFile: ''",
@@ -304,6 +306,10 @@ check('host entry: apply() logs one warning, registers nothing, tolerates bad co
   assertEquals(typeof module.apply, 'function', 'apply export')
   assertEquals(module.default, undefined, 'must not use the service-class export form')
   assert(Object.isFrozen(module.DEFAULTS), 'DEFAULTS must be frozen')
+  assert(
+    Array.isArray(module.DEFAULTS.privacy.redactPatterns) && module.DEFAULTS.privacy.redactPatterns.length === 0,
+    'privacy.redactPatterns must default to [] (V3 sync)',
+  )
   assertEquals(JSON.stringify(module.DEFAULTS), JSON.stringify(DEFAULTS), 'DEFAULTS match ADR §10')
 
   const malformed = [undefined, null, 'garbage', [], {}, { enabled: false }, { store: 'not-an-object' }]

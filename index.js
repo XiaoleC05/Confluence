@@ -62,6 +62,7 @@ export const DEFAULTS = Object.freeze({
     denyPathPatterns: Object.freeze(['**/.env*', '**/*.pem']),
     privateSessions: Object.freeze([]),
     disabledWorkspaces: Object.freeze([]),
+    redactPatterns: Object.freeze([]),
   }),
   ui: Object.freeze({ enabled: true, pollMs: 5000 }),
   export: Object.freeze({ enabled: false, dir: '.confluence/export' }),
@@ -172,6 +173,7 @@ export function resolveConfig(raw) {
     privacyRaw.disabledWorkspaces,
     DEFAULTS.privacy.disabledWorkspaces,
   )
+  privacy.redactPatterns = takeStringArray(privacyRaw.redactPatterns, DEFAULTS.privacy.redactPatterns)
   config.privacy = privacy
 
   return { config, warnings }

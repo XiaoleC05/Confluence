@@ -54,7 +54,7 @@ ACLs; the panel shows it read-only in the footer.
 |---|---|---|---|---|---|
 | `dir` | string | `''` | `''` or path, ≤512 chars | Store root (§2.1) | warn + fallback `''` |
 | `retentionDays` | int | `90` | 7–3650 | Age cutoff for default board queries and the pulse; entries older than this are hidden from default reads (not deleted in v1; compaction owns deletion, M4). `confluence_read` by exact id still works. | warn + `90` |
-| `maxEntriesPerWorkspace` | int | `2000` | 50–20000 | Soft cap per workspace: reaching it warns in the tool result and panel; the hard boundary is `value + 500` (`2500` at default), where new `confluence_post`/`confluence_reply` calls fail with `CONFLUENCE_BOARD_FULL` (rule owned by `store-format.md` §… "2 000 soft / 2 500 hard"). Open questions/handoffs count too. | warn + `2000` |
+| `maxEntriesPerWorkspace` | int | `2000` | 50–20000 | Visible-entry cap per workspace. At the cap, new `confluence_post`/`confluence_reply` calls are rejected with `BOARD_FULL` and no line is appended; the tool tells the user to tombstone entries or lower retention. Open questions/handoffs count too. Owning rule: `data-model.md` §6 (`MAX_ENTRIES_PER_WORKSPACE`) and `store-format.md` §17 item 23. | warn + `2000` |
 | `maxBodyBytes` | int | `8192` | 256–49152 | UTF-8 byte cap for one note body; larger posts are rejected with `CONFLUENCE_INVALID_ARGUMENT`. Must stay well under the journal line cap (64 KiB) to leave JSON/provenance headroom. | warn + `8192` |
 | `pollMs` | int | `4000` | 1000–60000 | Host-side store freshness poll (the correctness contract; ADR-0001 §6). `fs.watch` only accelerates it. | warn + `4000` |
 | `watch` | bool | `true` | — | Best-effort directory watcher (debounced 300–500 ms). Failure degrades silently to polling with one debug-log line. | warn + `true` |
@@ -103,10 +103,10 @@ targets.
 |---|---|---|---|---|---|
 | `redact` | bool | `true` | — | Applies built-in secret patterns (API keys/tokens, PEM private keys, `password=`-style assignments, authorization headers) to note titles+bodies, recall excerpts, ledger file hints and export. Best effort, labeled as such. | warn + `true` |
 | `redactTitles` | bool | `true` | — | Titles are redacted with the same rules (they can contain secrets pasted into a prompt). Turning this off is allowed but the panel shows a privacy-warning banner. | warn + `true` |
+| `redactPatterns` | string[] | `[]` | ≤20 regex sources, each ≤200 chars, additive | Canonical in the v1 shape per ADR-0001 errata E2 (promised by §11; absent from the original §10 YAML): user patterns added to the built-ins. Custom regexes applied after built-ins with `giu`; cannot disable built-ins. | invalid regex dropped, warn `CONFIG_PATTERN_INVALID` |
 | `denyPathPatterns` | string[] | `["**/.env*", "**/*.pem"]` | ≤32 patterns, each ≤200 chars, `*`/`**` glob only | Extra deny patterns for ledger file hints (added to built-ins: `.ssh/`, `.aws/`, `.git-credentials`, `id_rsa*`, `*.key`, `*.p12`, `*.pfx`, `secrets*`). Additive only; built-ins cannot be removed via config. | drop bad patterns, warn `CONFIG_PATTERN_INVALID` |
 | `privateSessions` | string[] | `[]` | session ids, ≤256 entries, each `^[A-Za-z0-9._-]{4,128}$` | User-only per-session opt-out: no pulse (scoped `suppressRuntimeContext()`), no ledger row, no presence, no Confluence tools for that session. Existing entries stay readable to others in the workspace. | drop invalid ids, warn |
 | `disabledWorkspaces` | string[] | `[]` | workspace keys (`ws_[0-9a-f]{16}`) or canonical absolute paths, ≤64 entries | User-only per-workspace opt-out: sessions resolving to it get no tools/pulse/recall/panel data and the panel shows "sharing off"; stored data is retained but hidden. Paths are canonicalized to keys at activation. | drop invalid entries, warn |
-| `redactPatterns` | string[] | `[]` | ≤20 regex sources, each ≤200 chars, additive | **Addition beyond ADR-0001 §10** (ADR §11 promises configurable redaction patterns; §10 did not name the field). Custom regexes applied after built-ins with `giu`; cannot disable built-ins. Deviation D1, Lead to confirm. | invalid regex dropped, warn `CONFIG_PATTERN_INVALID` |
 
 Private/disabled state is evaluated once per session at `agent/created` and again on config reload
 for live agents (`ctx.agents.list()`), so toggling from the panel reaches running sessions.
@@ -122,8 +122,8 @@ for live agents (`ctx.agents.list()`), so toggling from the panel reaches runnin
 
 | Field | Type | Default | Range / format | Effect | Invalid behavior |
 |---|---|---|---|---|---|
-| `enabled` | bool | `false` | — | Opt-in switch for the `memories.v1.jsonl` + `manifest.v1.json` export. `false`: the `/confluence export` command fails with `CONFLUENCE_EXPORT_DISABLED`; nothing is ever written into the workspace. | warn + `false` |
-| `dir` | string | `.confluence/export` | workspace-relative, no `..`, no drive/UNC prefix, ≤256 chars | Output directory under `<workspace>`; must stay inside the workspace after realpath. Files: `memories.v1.jsonl` (schema `confluence.memories/v1`) and `manifest.v1.json` (schema `confluence.export/v1`, written last/atomically) — contract owned by `solo-bench-integration.md` §6. Created with a generated `.gitignore` + README warning. `solo-bench` reads only these files, never the live journal. | warn + default |
+| `enabled` | bool | `false` | — | Opt-in switch for the `memories.v1.jsonl` + `manifest.json` export. `false`: the `/confluence export` command fails with `CONFLUENCE_EXPORT_DISABLED`; nothing is ever written into the workspace. | warn + `false` |
+| `dir` | string | `.confluence/export` | workspace-relative only (ADR-0001 errata E3), no `..`, no drive/UNC prefix, ≤256 chars | Output directory under `<workspace>`; must stay inside the workspace after realpath. Files: `memories.v1.jsonl` (each line `v:1`, `schema:"confluence.memories/v1"`) and `manifest.json` (`schema:"confluence.memories/v1"`, `formatVersion:1`, written last/atomically); tombstoned entries are exported as content-free `deleted:true` stubs. `store-format.md` §14 is authoritative; `solo-bench-integration.md` §6 is the consumer summary. Created with a generated `.gitignore` + README warning. `solo-bench` reads only these files, never the live journal. | warn + default |
 
 ### 2.9 `debug`
 
@@ -196,6 +196,7 @@ override replaces this row's `config` as a whole at the Loader level — see §6
     privacy:
       redact: true
       redactTitles: true
+      redactPatterns: []
       denyPathPatterns:
         - '**/.env*'
         - '**/*.pem'
@@ -304,19 +305,13 @@ present when the Host half is disabled.
 
 ## Open questions
 
-1. **D1 (`privacy.redactPatterns`)** — ADR-0001 §10's shape has no pattern list while §11 promises
-   configurable redaction. Keep the field (proposed) or defer to v2? Needs Lead sign-off.
-2. **D2 (`export.dir` absolute paths)** — `solo-bench-integration.md` §6 says `export.dir` may be
-   "absolute or workspace-relative"; this contract allows **workspace-relative only** (ADR-0001 §6,
-   round-2 R5, and the workspace-containment test). Confirm which doc changes; recommended: keep
-   workspace-relative for v1 and note the restriction in the solo-bench doc.
-3. **Reload behavior of opt-out** — is a full plugin restart on every toggle acceptable UX for M3,
+1. **Reload behavior of opt-out** — is a full plugin restart on every toggle acceptable UX for M3,
    or should `privacy.privateSessions` become a `.volatile()` config field once a `Config` schema is
    introduced in v2? Restarting the Host half on a toggle also remounts the client module; the panel
    must be idempotent either way.
-4. **`store.maxBodyBytes` vs journal line cap** — 49,152 is the proposed ceiling; the journal design
+2. **`store.maxBodyBytes` vs journal line cap** — 49,152 is the proposed ceiling; the journal design
    may want a stricter 32 KiB to keep a merged line safely under 64 KiB. Owner: store design doc.
-5. **Retention semantics** — should entries hidden by `retentionDays` still be returned by explicit
+3. **Retention semantics** — should entries hidden by `retentionDays` still be returned by explicit
    `confluence_read` (proposed yes) and should the panel toggle "show older" exist in M3 or M4?
-6. **Naming consistency** — warning prefixes (`CONFIG_*`, `PULSE_*`, `PRIVACY_*`) and error codes
+4. **Naming consistency** — warning prefixes (`CONFIG_*`, `PULSE_*`, `PRIVACY_*`) and error codes
    (`CONFLUENCE_*` per `tool-api.md`) must match the tool-api doc; cross-check before implementation.

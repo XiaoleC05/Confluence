@@ -32,7 +32,7 @@ sessions' deliberate posts; recall text comes from the platform's own session lo
 Process model: DSH Desktop likely runs one Host process per app instance with multiple windows
 (`HYPOTHESIS:`, research fact 57); the design is correct in both topologies because correctness
 never relies on in-process events between writers — it relies on poll + per-writer shards. Each
-plugin mount is one writer (`writerId = <pid>-<random>`) with its own shard files (ADR 0001 §6).
+plugin mount is one writer (`writerId = <pid>-<8 lowercase hex>`) with its own shard files (ADR 0001 §6).
 
 ## 2. Components and owned responsibilities
 
@@ -142,7 +142,7 @@ createIds({ clock, random }) -> {
   ulid(): string,                         // 26-char Crockford base32, strictly monotonic per writer
   entryId(): string,                      // "cnf_" + ULID (solo-bench export id format)
   tombstoneId(): string,                  // "tmb_" + ULID
-  makeWriterId(): string,                 // "<pid>-<8 hex>" (pid passed in)
+  makeWriterId(): string,                 // <pid>-<8 lowercase hex> (pid passed in)
   wsKey(canonicalPath): string            // "ws_" + sha256(lowercased/utf8).slice(0,16)
 }
 ```
@@ -788,10 +788,9 @@ clarifications already recorded; the rest are implementation clarifications.
 9. **Cross-document alignment settled in round 3.** Journal `ts` is an ISO-8601 UTC string (the
    ledger-recall example follows it; a `ts:<ms>` remnant in its §1 intro is stale). Board ids are
    `cnf_` + 26-char ULID and tombstones `tmb_` + 26-char ULID (Lead ruling on plan O3; the export
-   reuses board ids unchanged). The projection unit key is `confluence_watermark` as registered in
-   [`pulse.md`](pulse.md) §8.1 — **ADR 0003 §2 spells it `confluence_watermarks` (plural)**; this
-   design treats that as an ADR text slip to be corrected, because the registered key must match
-   pulse.md. `New:`/`unread` mean `seq > boardReadSeq`; `digestSeq` only gates the welcome
+   reuses board ids unchanged). The projection unit key is the singular `confluence_watermark`, as
+   registered in [`pulse.md`](pulse.md) §8.1 and stated consistently in ADR 0003 §2 and the execution
+   plan. `New:`/`unread` mean `seq > boardReadSeq`; `digestSeq` only gates the welcome
    (ADR 0003 §3, ADR 0001 §17 E5).
 10. **Append-not-replace for pulse snapshots (ADR 0001 §17 E1).** The installed loop appends a new
    runtime-context snapshot per changed pulse text and does not replace or shadow earlier ones, so

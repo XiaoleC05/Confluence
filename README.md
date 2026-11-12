@@ -171,8 +171,8 @@ D:\05_Code\Confluence\
 ```
 
 There is no `lib/`, no `client.js` and no build step yet: the v1 host is planned as plain ESM
-JavaScript with Node builtins only, and the client half arrives in M3. The empty `src/` directory is
-reserved for future implementation and is not part of the bundle today.
+JavaScript with Node builtins only, and the client half arrives in M3. The planned M1 layout adds
+`lib/` for the host implementation; nothing outside the files listed above ships today.
 
 ---
 
@@ -211,7 +211,7 @@ Start with the [documentation index](docs/README.md) for the full map and readin
 - [test plan](docs/design/testing.md) — acceptance criteria and verification plan.
 - [solo-bench integration](docs/design/solo-bench-integration.md) — export contract and merge path.
 - [execution plan](docs/plan/execution-plan.md) — milestone plan and ownership.
-- [M0 spikes](docs/plan/m0-spikes.md) — M0 spike list and results.
+- [M0 spikes](docs/plan/m0-spikes.md) — M0 spike specs; not executed (results TBD).
 - ADR [0002 — store](docs/adr/0002-store-format-and-concurrency.md),
   [0003 — pulse/watermarks](docs/adr/0003-pulse-and-watermarks.md),
   [0004 — privacy](docs/adr/0004-privacy-and-consent.md),
@@ -302,7 +302,7 @@ sections. They intentionally test **packaging**, not unimplemented behaviour.
 | **M1 — core** | Journal store, workspace resolver, board records, `confluence_board`/`post`/`read`, pulse + welcome digest, projection watermarks, unit tests. | Planned (4 d) |
 | **M2 — collaboration** | Live ledger + presence, `reply`/`search`/`recall`, redaction/caps, private/opt-out, scratch-profile offline E2E. | Planned (3.5 d) |
 | **M3 — panel** | Read-only UI, locale, transport decision, mark-read/opt-out, no-egress test; **install verification**. | Planned (2.5 d) |
-| **M4 — hardening** | Compaction/export + manifest, docs/publishing verification, soak/concurrency tests, badge/custom cards, solo-bench integration doc. | Planned (2 d) |
+| **M4 — hardening** | Compaction/export + manifest, docs/publishing verification, soak/concurrency tests, solo-bench integration doc. Badge, custom cards and composer UI are deferred to **v0.1.1** (signed off). | Planned (2 d) |
 
 Total v1 scope ≈ **13 engineer-days** (±30 %), per [ADR §14](docs/adr/0001-confluence-architecture.md).
 v2 (optional): deterministic lite-capture signals gated on a precision/recall evaluation — not v1.

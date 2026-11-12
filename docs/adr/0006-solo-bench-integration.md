@@ -1,6 +1,6 @@
 # ADR 0006 — solo-bench integration: vendored subtree + export-only contract
 
-- Status: **Proposed** (binding on the later merge phase; nothing here is executed during the design phase)
+- Status: **Proposed (future merge phase)** — binding on the later merge; nothing here is executed during the design phase
 - Date: 2026-11-13
 - Context: [ADR 0001](0001-confluence-architecture.md) §6/§13/§14;
   [solo-bench integration design](../design/solo-bench-integration.md); [testing strategy](../design/testing.md) §11

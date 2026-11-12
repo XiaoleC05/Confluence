@@ -31,7 +31,9 @@ default `ptc` preset nested dispatch is logged as `tool/ptc-dispatch`, so every 
 **partial** and no feature may claim "this session changed these files" (research F39; position-b §4).
 
 Ledger rows are journal `session` records (ADR §6): `{ v:1, type:'session', id:<sessionId>, ws:<wsKey>,
-seq:<ULID>, ts:<ms>, …ledger fields }`. They are **upserts**: readers merge all shards and keep the record
+seq:<ULID>, ts:<ISO-8601/RFC 3339 string>, …ledger fields }` — the envelope is defined by
+[`data-model.md`](data-model.md) §2, and `ts` is a **string**, never a millisecond number. They are
+**upserts**: readers merge all shards and keep the record
 with the greatest `seq` per `(ws, sessionId)`; a newer row for a session replaces the older one in the
 read view, and the journal keeps both until retention. No record is ever rewritten in place.
 
@@ -333,7 +335,9 @@ a fully-redacted excerpt is replaced by the marker, not dropped silently.
      `header.cwd` (cheap). Cold path: `listSessions()` (lightweight) → find the record → canonicalize
      `header.cwd`. Cache the decision per `(callerWs, sessionId)` for 60 s (bounded map, ≤ 128 entries).
      A non-matching or unknown session returns **`NOT_FOUND`** (the same error as a missing
-     id: no cross-workspace existence oracle).
+     id: no cross-workspace existence oracle). **Direct refs to a private/opted-out target behave as
+     not-found (same as missing)** — the privacy filter runs before the authority/read step, so a ref
+     reveals nothing about suppressed sessions.
   3. `window = await sq.readEvent({ sessionId, seq, before: 1, after: 1 })` — bounded window
      `before/after ≤ readWindowMax (default 50)`; returns `{session, target, events, startSeq, endSeq}`
      (`dsh-session-query/lib/index.js:1204-1238`). In v1 the window is at most 3 events (target ± 1).
@@ -366,7 +370,7 @@ reserves `signal`/`watermark` only). `redactions:N` is appended when redaction c
 | Huge logs | Per-session load is the cost unit: 3 sessions max; if a load exceeds the deadline it is abandoned (result discarded), and the next session is not started. |
 | No workspace key | All six tools absent; nothing to recall. |
 | Private/opted-out caller | Tools hidden/pulse suppressed; recall never runs for it. |
-| Private/opted-out *target* | Target sessions are excluded from enumeration (M2 privacy filter applied before recall), and direct refs to them behave as not found. |
+| Private/opted-out *target* | Target sessions are excluded from enumeration (M2 privacy filter applied before recall), and direct refs to them behave as not-found (same as missing). |
 | `readEvent` seq out of range / session vanished | `NOT_FOUND`; no retry. |
 
 Nothing in recall can block the pulse, the board, or a turn: the tool handler is the only entry point and
@@ -416,7 +420,8 @@ function addHint(row, rel) {
 ```
 
 Journal append is `appendFile` of one complete JSON line to this writer's shard (ADR §6), with the
-`{v,type:'session',id:sessionId,ws,seq:ulid(),ts}` envelope; fsync batched ~1 s. Read side merge is
+`{v,type:'session',id:sessionId,ws,seq:ulid(),ts:iso()}` envelope (the envelope is `data-model.md` §2 —
+`ts` is an ISO-8601/RFC 3339 string, never a number); fsync batched ~1 s. Read side merge is
 per-shard `*.jsonl`, sort by `seq`, last-wins per `id`, cap 200 sessions in the in-memory index.
 
 ---

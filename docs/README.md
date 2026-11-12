@@ -6,8 +6,9 @@ board, and on-demand recall. The binding architecture is
 [ADR 0001](adr/0001-confluence-architecture.md).
 
 **Status: design complete; implementation starts at M1.** Round-1 research, the round-2 decision,
-ADR-0001, the round-3 design documents, ADRs 0002–0006, the execution plan and the M0 spike results
-are present in the repository. Packaging, install and publishing guides are present.
+ADR-0001, the round-3 design documents, ADRs 0002–0006 and the execution plan are present in the
+repository. The **M0 spike specs** are present but **not executed** — results are TBD in
+`plan/m0-spikes.md` §10. Packaging, install and publishing guides are present.
 
 Verification honesty: documents state what was **executed** and what was not. The project has not been
 installed into a DSH profile, has not run in a live host, and has published nothing. Numbers in the
@@ -42,7 +43,7 @@ to avoid.
 | [ADR 0003 — pulse and watermarks](adr/0003-pulse-and-watermarks.md) | Round 3 — decision record | Passive pulse rendering and log-derived watermark mechanics. |
 | [ADR 0004 — privacy and consent](adr/0004-privacy-and-consent.md) | Round 3 — decision record | Privacy, consent boundaries, redaction and opt-out decisions. |
 | [ADR 0005 — UI transport](adr/0005-ui-transport.md) | Round 3 — decision record | M3 panel and the host→client data-channel decision. |
-| [ADR 0006 — solo-bench integration](adr/0006-solo-bench-integration.md) | Round 3 — decision record | The `memories.v1.jsonl` export contract and the low-risk merge path into the `solo-bench` workbench. |
+| [ADR 0006 — solo-bench integration](adr/0006-solo-bench-integration.md) | **Proposed** (future merge phase; not a decided record) | The `memories.v1.jsonl` export contract and the low-risk merge path into the `solo-bench` workbench. |
 
 ## 3. Research (round 1, frozen)
 
@@ -52,7 +53,7 @@ to avoid.
 | [Prior art in the DSH ecosystem](research/prior-art.md) | What already exists (session-reference, session search, dsh-context, better-sidebar, Crisp), what overlaps, and the honest gap analysis. |
 | [External patterns](research/external-patterns.md) | Survey of memory/coordination patterns and a decision-oriented applicability matrix for an offline plugin. |
 
-## 4. Discussion records (rounds 1–2)
+## 4. Discussion records (rounds 1–2 and independent review)
 
 | Document | One-line description |
 |---|---|
@@ -60,6 +61,7 @@ to avoid.
 | [Round 2 — cross-critique and architecture decision](discussion/round-2.md) | Votes, adopted agreements, Lead rulings (workspace key, six tools, lite-capture deferral, UI scope, storage layout), corrections accepted. |
 | [Position A](discussion/position-a.md) | Architect A's written position on the hybrid option and its conditions. |
 | [Position B](discussion/position-b.md) | Architect B's written position on the hybrid option and its conditions. |
+| [Independent design review](discussion/design-review.md) | Independent verifier verdict (PASS WITH FIXES), executed checks, 8 P1 / 16 P2 findings, requirement matrix and fix dispositions. |
 
 ## 5. Design documents (round 3)
 
@@ -88,7 +90,7 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
 | Document | One-line description | Status |
 |---|---|---|
 | [plan/execution-plan.md](plan/execution-plan.md) | Milestone plan (M0–M4), owners, dependencies, acceptance gates and risk checkpoints. | **Available** |
-| [plan/m0-spikes.md](plan/m0-spikes.md) | The M0 spike list, methods and recorded results (runtime-context dedupe, projection fold, PTC presentation, Windows journal, multi-window topology, host data channel, atomic-write import). | **Available** |
+| [plan/m0-spikes.md](plan/m0-spikes.md) | M0 spike **specs** (method/protocol for S1–S7, spike→milestone map); **not executed** — results TBD in §10. | **Available** |
 
 ## 7. Packaging and operations
 
@@ -111,7 +113,8 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
 | Packaging scaffold (manifest, patch, entry, locales, icon, examples) | Executed and committed |
 | Contract tests (`node --test "test/*.test.js"`, `node scripts/check.mjs`) | Executed offline; see the project README verification table |
 | `npm pack --dry-run` file-list inspection | Executed offline — 9 files, no unintended content; no tarball written |
-| Round-3 design documents / ADRs 0002–0006 / execution plan / M0 spikes | Available (authored in round 3) |
+| Round-3 design documents / ADRs 0002–0006 / execution plan | Available (authored in round 3) |
+| M0 spike specs | Present; **not executed** — results TBD in `plan/m0-spikes.md` §10 |
 | Bundle installed into a DSH profile; activation observed | **Not executed** |
 | Pulse/board/tools/UI behaviour | **Not implemented; not executed** |
 | Building/hashing the tarball; publishing/release | **Not executed — nothing was published** |
@@ -125,3 +128,4 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
 - Numbers are design targets unless explicitly recorded as measured results.
 - The project never claims a capability it has not implemented; the design-stage scaffold in
   `index.js` logs exactly one warning and does nothing else.
+

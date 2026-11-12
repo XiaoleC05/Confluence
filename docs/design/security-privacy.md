@@ -14,10 +14,10 @@
 | Board entries (title, body, tags, file hints, author session title) | `$DSH_HOME/storages/confluence/v1/workspaces/<wsKey>/journal.*.jsonl` | High: agent/user-authored working notes, may contain secrets pasted by a user or model |
 | Session ledger metadata (title, status, turn count, timestamps, effective dir, ≤8 relative paths) | same journal, `session` records | Medium: activity/attention metadata; titles can contain pasted secrets |
 | Presence heartbeats (live session ids, writer id, plugin version, updatedAt) | `presence/<writerId>.json` | Low |
-| Workspace identity (canonical path, `wsKey`) | journal/`workspace` records + panel payloads | Medium: reveals project locations |
+| Workspace identity (canonical path, `wsKey`) | store `MANIFEST.v1.json` + panel payloads | Medium: reveals project locations |
 | Recall results (bounded excerpts of prior session logs) | **not stored by Confluence**; exist only in one tool result / panel read | High transient |
 | DSH session logs (the source of truth) | `$DSH_HOME/sessions/...` (DSH-owned) | High; Confluence never writes them |
-| Export `memories.v1.jsonl` + `manifest.v1.json` | `<workspace>/.confluence/export/` (opt-in) | High; leaves profile storage into a repo |
+| Export `memories.v1.jsonl` + `manifest.json` | `<workspace>/.confluence/export/` (opt-in) | High; leaves profile storage into a repo |
 | Debug log (opt-in) | user-specified absolute path | Low by design: codes/counts/timings only |
 | Panel read cursor | browser `localStorage` | Low |
 
@@ -176,27 +176,30 @@ documented, and outside this plugin's authority.
 
 - Opt-in (`export.enabled: false` default); written only by an explicit user action; never read back
   by the plugin; deterministic order; redacted; workspace-relative file paths only; absolute/home
-  paths stripped; tombstones excluded or marked `deleted`; manifest carries
-  `schema: confluence.memories/v1`, `generatedAt`, `pluginVersion`, counts, `warnings: []`.
+  paths stripped. Files: `memories.v1.jsonl` (each line `v:1` + `schema:"confluence.memories/v1"`)
+  and `manifest.json` (`schema:"confluence.memories/v1"`, `formatVersion:1`); tombstoned entries are
+  exported as content-free `deleted:true` stubs, never the content (`store-format.md` §14 is
+  authoritative).
 - `export.dir` must be workspace-relative and stay inside the workspace after `realpath`
   (no `..`, no drive/UNC prefix, no symlink escape); the exporter writes a generated `.gitignore`
   containing `*` and a README warning inside the export directory as defense in depth.
-- **Repository guidance (packaging doc):** add `.confluence/` to the Confluence repository's
-  `.gitignore` (the current root `.gitignore` has `confluence-export/` and does not yet list
-  `.confluence/`) and state in README/`docs/install.md` that export creates commit-able files.
+- **Repository guidance:** `.confluence/` is listed in the repository root `.gitignore`; README and
+  `docs/install.md` still state that an export creates commit-able files inside the user's workspace.
 - `debug.logFile` is off by default; when enabled it contains codes/counts/timings/writer ids and
   config warnings only, never note bodies, recall text, prompts or tool output, and rotates at
   5 MB × 2.
 
 ### 3.10 R8 — multi-window correctness
 
-Per-writer append-only JSONL shards, `fs.appendFile` of complete lines ≤64 KiB; board posts `fsync`
-before acknowledging, other appends batch at ~1 s; readers merge shards sorted by `seq`, dedupe by id
-(`entry` first-wins, `session` last-wins); readers ignore a trailing line without `\n` and recover on
-the next poll (ADR-0002). `fs.watch` is an accelerator only; polling (`store.pollMs`) is the
-freshness contract. Compaction/export are the only lease-protected operations, never the append
-path. Full design: `store-format.md`; tests here assert: torn line ignored, two writers' records
-both survive, no shard rewrite, deterministic merge, cap behavior.
+Per-writer append-only JSONL shards written through a held `O_APPEND` file descriptor plus
+`fs.writeSync` of whole lines (≤64 KiB), not `fs.appendFile`; batched `fsync`, and board posts `fsync`
+before acknowledging while ledger/presence rows may lose the last record on a crash (ADR-0001 errata
+E10; `store-format.md` §13). Readers merge shards sorted by `seq`, dedupe by id (`entry` first-wins,
+`session` last-wins); readers ignore a trailing line without `\n` and recover on the next poll
+(ADR-0002). `fs.watch` is an accelerator only; polling (`store.pollMs`) is the freshness contract.
+Compaction/export are the only lease-protected operations, never the append path. Full design:
+`store-format.md`; tests here assert: torn line ignored, two writers' records both survive, no shard
+rewrite, deterministic merge, cap behavior.
 
 ### 3.11 R12 — panel rendering
 
@@ -256,7 +259,7 @@ sanitizer and pass the same hostile-note fixtures.
 |---|---|---|---|---|
 | T1 | Redaction before persistence | `redact()` unit + post→journal scan | keys `sk-…`, `AKIA…`, `ghp_…`, JWT, PEM block, `password=hunter2`, `Bearer abc…`, a public key, `password:` with no value | secrets → `[redacted]`; public key and empty assignment untouched; ≤50 replacements |
 | T2 | Title redaction | store + render | title containing a token, `privacy.redactTitles` on/off | on: redacted in journal and pulse; off: warning `PRIVACY_TITLES_UNREDACTED` and panel banner |
-| T3 | Hostile note fixtures | pulse/tool render escaping | `</confluence-workspace>`, `<script>alert(1)</script>`, `{{cwd}}`, U+2028/2029, C0 controls, bidi override, 1 MB title, CJK+emoji, `\n`-heavy body | `<`→`\u003c`, `&`→`\u0026`, U+2028/2029 escaped, controls stripped, title truncated to 120 chars, body capped, frame intact, byte-stable on re-render |
+| T3 | Hostile note fixtures | pulse/tool render escaping | `</confluence-workspace>`, `<script>alert(1)</script>`, `{{cwd}}`, U+2028/2029, C0 controls, bidi override, 1 MB title, CJK+emoji, `\n`-heavy body | `<`→`\u003c`, `&`→`\u0026`, U+2028/2029 escaped, controls stripped, title stored ≤160 chars and rendered ≤60 in the pulse, body capped, frame intact, byte-stable on re-render |
 | T4 | Journal field allow-list | scan every `session` record + presence file | a full board/ledger fixture | keys ⊆ allow-list; no `/prompt|assistant|reasoning|toolResult|tool_result|command|stdout|stderr/i` key; `entry` records may have `title`/`body` only |
 | T5 | Ledger path deny-list | hint collector | `.env`, `.ssh/id_rsa`, `src/app.ts`, `C:\abs\path.ts`, symlink to outside, `..\..\x` | only `src/app.ts` retained; absolute/`..`/symlink/denied dropped |
 | T6 | Workspace isolation | every boundary | two workspaces A/B with distinct entries and sessions | A's tools/pulse/recall/panel/export never return B's data; `read` of B's id in A → `NOT_FOUND`; `recall` never lists B sessions |
@@ -267,13 +270,13 @@ sanitizer and pass the same hostile-note fixtures.
 | T11 | Disabled workspace | config fixture + second workspace | `disabledWorkspaces: [ws_A]` | A: no tools/pulse/writes/panel data; B unaffected; existing A records retained but not served |
 | T12 | Config validation | config loader | wrong types, out-of-range ints, bad regex, `..\` export dir, device path, unknown key | defaults applied, deterministic warnings, no throw, no store write outside root |
 | T13 | Recall bounds | recall service | 10 same-workspace sessions with hits, slow reads, cross-workspace session | ≤3 sessions, ≤5 hits, excerpts ≤600 chars, timeout partial marked, untrusted framing, caller session excluded, foreign session excluded |
-| T14 | Export safety | exporter | export disabled; enabled with tombstone + secret + absolute path in body/paths | disabled → `CONFLUENCE_EXPORT_DISABLED`; enabled → deterministic order, redacted, relative paths only, no absolute-path regex, tombstones excluded/marked, manifest schema correct |
+| T14 | Export safety | exporter | export disabled; enabled with tombstone + secret + absolute path in body/paths | disabled → `CONFLUENCE_EXPORT_DISABLED`; enabled → deterministic order, redacted, relative paths only, no absolute-path regex, tombstoned entries exported as content-free `deleted:true` stubs, `manifest.json` carries `schema:"confluence.memories/v1"` + `formatVersion:1` |
 | T15 | Multi-window/torn line | two simulated writers + truncated tail | incomplete last line, interleaved shards | torn line ignored and recovered next poll; both writers' records merge; no shard rewritten; dedupe/last-wins correct |
 | T16 | Board caps | posting > cap, body > cap | `maxEntriesPerWorkspace`, `maxBodyBytes` | reject with named error; no partial append; pulse/panel show counts |
 | T17 | Debug log content-free | debug writer | normal operation + recall | no note body/recall text/prompt/tool output in the log; rotation bounded |
 | T18 | Panel XSS | static + component test | hostile note fixtures in payload | rendered as text; no `innerHTML`/`dangerouslySetInnerHTML` in source; no anchor generated |
 | T19 | Audit transparency | host recall ring buffer | one recall call | tool result carries provenance; panel audit shows session title, query, hit count, time; no secret text beyond the bounded query echo (query is the model's own string) |
-| T20 | Workspace rename/collision | canonicalizer | path case variants, trailing slash, junction/symlink, missing dir | same canonical key for case/slash/symlink variants; missing dir → lexical key + `pathVerified:false`; no merge across distinct realpaths |
+| T20 | Workspace rename/collision | canonicalizer | path case variants, trailing slash, junction/symlink, missing/unresolvable dir | same canonical key for case/slash/symlink variants; realpath failure → **no workspace key** and therefore no Confluence tools/pulse; no merge across distinct realpaths |
 
 Tests are `node --test` unit/contract tests plus fixture-driven scans; live M2/M3 checks are listed
 in `ui.md` §11 and the testing doc. The no-egress and allow-list scans run in CI over the packed
@@ -297,8 +300,8 @@ file list, not just the working tree.
   applied to every path (`confluence_recall` and `confluence_read` session refs) with a live
   two-workspace fixture; if `readEvent` can be reached without the canonical-workspace check, treat
   as a bug and add the check.
-- **S-SEC6** — `.confluence/` in `.gitignore`: the packaging teammate must add it and an install-doc
-  warning before the export feature ships (M4).
+- **S-SEC6** — M4 release check: confirm the repository root `.gitignore` still lists `.confluence/`
+  and the export directory README warning is present (both already in place as of round 3).
 
 ## Open questions
 
@@ -312,9 +315,6 @@ file list, not just the working tree.
 3. **Private-session semantics vs DSH logs** — the panel/README state that opt-out does not modify
    DSH logs. Confirm the wording satisfies the "workspace = consent boundary" promise or whether a
    stronger user-facing warning is required at first toggle.
-4. **Export `.gitignore` ownership** — repository root `.gitignore` currently lists
-   `confluence-export/` but not `.confluence/`; who updates it (packaging doc owns it) and should the
-   plugin also warn in the panel when the workspace is a git repository?
-5. **Encryption/at-rest** — rejected in ADR-0004 for v1 (key management without a server adds
+4. **Encryption/at-rest** — rejected in ADR-0004 for v1 (key management without a server adds
    failure modes and does not protect against same-user processes). Revisit only if the store moves
    to a shared/multi-user location.

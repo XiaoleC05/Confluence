@@ -47,6 +47,7 @@
     privacy:
       redact: true
       redactTitles: true
+      redactPatterns: []
       denyPathPatterns:
         - '**/.env*'
         - '**/*.pem'
@@ -97,6 +98,7 @@
     privacy:
       redact: true
       redactTitles: true
+      redactPatterns: []
       denyPathPatterns:
         - '**/.env*'
         - '**/*.pem'
@@ -146,6 +148,7 @@
     privacy:
       redact: true
       redactTitles: true
+      redactPatterns: []
       denyPathPatterns:
         - '**/.env*'
         - '**/*.pem'

@@ -197,7 +197,7 @@ range and each table row is the numbered test in order (row `02` in §6.4 = `UT-
 | 03 | Title comes from `sessionQuery.readTitle` when available, redacted; a missing title falls back deterministically and never breaks the row |
 | 04 | Metadata-only field allow-list: the emitted `session` record contains no prompt/assistant/tool-output/reasoning/command-line content (partner to SEC-02) |
 
-### 6.8 Recall — `UT-RECALL-01..05`
+### 6.8 Recall — `UT-RECALL-01..06`
 
 | ID | Assertion |
 |---|---|
@@ -206,6 +206,7 @@ range and each table row is the numbered test in order (row `02` in §6.4 = `UT-
 | 03 | Each hit is ≤600 chars, carries `session:<id>:<seq>` provenance, and the output says "literal match only; partial" |
 | 04 | Cooperative timeout (`recall.timeoutMs` 5000): slow fake `sessionQuery` returns partial results marked as timed out, no throw, no unhandled rejection |
 | 05 | Read-only: recall never appends to the journal, never calls `agent.inject`, never runs inside the pulse provider, and never replays a whole cold log (fake records calls) |
+| 06 | **Private/disabled target exclusion (load-bearing privacy control):** a target session listed in `privateSessions` (or whose workspace is in `disabledWorkspaces`) is excluded from recall enumeration even when it matches the literal text; `confluence_read` on a `session:<id>:<seq>` ref to such a session behaves as not-found (clear error, no content, no excerpt). Covers ledger-recall §6.3/§8.2 and security-privacy §5.4 |
 
 ### 6.9 Config, privacy, redaction, paths, degradation, export
 
@@ -253,7 +254,7 @@ plus real temp-directory stores. If the fake and the real API diverge, the E2E s
 | ISO-01 | Same directory via different spellings/case/trailing slash/traversal → one workspace, one board |
 | ISO-02 | Different directories (including same basename in different parents) → isolated boards, ledger, recall, pulse |
 | ISO-03 | Junction/symlink to a target shares the target's workspace (realpath canon); a hint path that escapes via junction is refused |
-| ISO-04 | `privateSessions` / `disabledWorkspaces` isolation; a private session's activity never appears in another session's pulse or ledger output |
+| ISO-04 | `privateSessions` / `disabledWorkspaces` isolation; a private session's activity never appears in another session's pulse or ledger output; recall enumeration excludes private/disabled target sessions and refs to them are not-found (UT-RECALL-06) |
 
 **Security fixtures (`SEC-*`)** — content/security tests, not model-behavior tests:
 
@@ -371,6 +372,7 @@ caps: 2 000 board entries, 200 ledger sessions, 3 shards. Timing tests are opt-i
 | `redaction/corpus.jsonl` | Secret→expected-redacted pairs, plus benign false-positive corpus |
 | `workspaces/{alpha,beta,alpha-case,nested-alpha}/` | Synthetic project dirs (created by the harness at run time, not committed with content) |
 | `export/memories.v1.jsonl`, `export/manifest.json` | Export conformance fixtures shared with the future Go consumer (`GOCON-*`); `schema:"confluence.memories/v1"`, `formatVersion:1`, `cnf_` ids, tombstone stubs (store-format.md §14) |
+| `export/integrity-stubs/` | **V7 export-integrity fixture:** 2 live entries + 1 tombstone stub; manifest `recordCount:2`, `firstSeq`/`lastSeq` from live records only, `files[0].bytes`/`sha256` over the **complete** file (stub line included); the conformance test asserts the consumer order: verify bytes/hash → parse lines → non-stub line count == `recordCount` (stub lines are valid but counted out) |
 | `sessions/synthetic-events.jsonl` | Minimal session-event streams for projection/fold tests (runtime-context snapshots, tool results, unknown events) |
 | `config/cases.json` | Default/override/bad-value matrices for UT-CONFIG |
 | `notes/benign.jsonl` | Realistic benign notes for false-positive/determinism tests |
@@ -436,7 +438,7 @@ the old rows (history) rather than overwrite.
 
 | ID | Requirement | Status (2026-11-13, design phase) | Evidence (command + artifact) | Date | Notes |
 |---|---|---|---|---|---|
-| CON-* | Packaging/static invariants | **Not executed** | — | — | Scaffold exists; no check script yet |
+| CON-* | Packaging/static invariants | **Executed** | `node --test "test/*.test.js"` → 18/18 pass; `node scripts/check.mjs` → 11/11 pass | 2026-11-13 | Packaging contract only; no runtime behavior claimed |
 | UT-* | Unit suite | **Not executed** | — | — | No M1+ code exists |
 | IT-* / ISO-* | Integration/isolation | **Not executed** | — | — | No store/tools exist |
 | E2E-* | Scratch-profile offline E2E | **Not executed** | — | — | No harness yet; design only |
