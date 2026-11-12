@@ -197,9 +197,13 @@ sessions; confluence_post = share.
 
 - **Budget:** target 200–320 tokens, hard cap 320 (≤1,400 chars); the docs must include a measured
   split. `<`, `&`, U+2028/2029 are escaped as `\uXXXX`, note text can never forge the closing tag.
-- **Freshness:** a new board entry or presence change makes the text differ → the loop commits one
-  new runtime-context snapshot (replacing the previous one in the request history) at the next
-  step; unchanged text costs zero tokens.
+- **Freshness (corrected — see §17 Errata E1):** a new board entry or presence change makes the
+  text differ → the loop commits one new runtime-context snapshot as an appended `user/message` at
+  the next step; earlier snapshots remain in the request history until compaction. Unchanged text
+  commits nothing (zero new tokens). Because snapshots accumulate rather than replace, v1 must keep
+  pulse changes infrequent (`digestSeq`/`boardReadSeq` split, coalesced), must measure snapshot
+  count vs session length in M0, and may collapse to a near-static pulse if accumulation proves
+  material (§17 E1).
 - **Welcome digest:** a session with no projection state gets a bounded welcome view on its first
   step — up to 3 newest entries plus every open question/handoff (capped), with the `through`
   cursor set to the rendered head, so a fresh session has value on install day without a backlog
@@ -262,10 +266,10 @@ pulse:   { enabled: true, maxHeadlines: 3, maxPeers: 2, maxChars: 1400 }
 ledger:  { enabled: true, maxFilesPerSession: 8, maxSessionsPerWorkspace: 200,
            fileHintsInPulse: false }
 recall:  { enabled: true, maxSessions: 3, maxHits: 5, timeoutMs: 5000 }
-privacy: { redact: true, redactTitles: true, denyPathPatterns: ["**/.env*", "**/*.pem"],
+privacy: { redact: true, redactTitles: true, redactPatterns: [], denyPathPatterns: ["**/.env*", "**/*.pem"],
            privateSessions: [], disabledWorkspaces: [] }
 ui:      { enabled: true, pollMs: 5000 }
-export:  { enabled: false, dir: '.confluence/export' }
+export:  { enabled: false, dir: '.confluence/export' }   # workspace-relative only; see §17 E3
 debug:   { logFile: '' }
 ```
 
@@ -334,7 +338,7 @@ debug:   { logFile: '' }
 | **M1 core** | Store/journal, workspace resolver, board records, `confluence_board`/`post`/`read`, pulse + welcome digest, projection watermarks, unit tests. | 4 d |
 | **M2 collaboration** | Live ledger + presence, `reply`/`search`/`recall`, redaction/caps, private/opt-out, scratch-profile E2E offline. | 3.5 d |
 | **M3 panel** | Read-only UI, locale, transport spike outcome, mark-read/opt-out, no-egress test. | 2.5 d |
-| **M4 hardening** | Compaction/export + manifest, docs/publishing/install verification, soak/concurrency tests, badge/custom cards, solo-bench integration doc. | 2 d |
+| **M4 hardening** | Compaction/export + manifest, docs/publishing/install verification, soak/concurrency tests. Badge/custom tool cards/composer move to v0.1.1 (Lead sign-off, §17 E7). | 2 d |
 | **v2 (post-v1)** | Opt-in deterministic "lite-capture" signals (≤2 decision/gotcha lines/turn, redacted, eval-gated) + continuous-index evaluation; schema already reserved. | 2 d + eval |
 
 Total v1 ≈ **13 engineer-days** (±30 %). Acceptance criteria and test plan in
@@ -377,3 +381,62 @@ Total v1 ≈ **13 engineer-days** (±30 %). Acceptance criteria and test plan in
   re-checked on DSH upgrades.
 - **PTC default preset:** tools may be reachable only via `run_code` SDK bindings. Mitigations:
   verify in M0 both presets; tool descriptions written for both surfaces.
+
+## 17. Errata and post-decision clarifications
+
+Recorded during round 3 while the detailed design documents were written; each item is normative
+for implementation and is already reflected in the referenced child documents.
+
+- **E1 — Runtime-context snapshots are appended, not replaced (corrects §8).** Round-3 verification
+  against the installed loop (`dsh-agent-loop/lib/index.js:859-866`) and session surface assembly
+  (`dsh-session/lib/index.js:1681-1696`) shows a changed pulse is committed as a **new appended
+  user-role `runtime-context` message**; earlier snapshots remain in the request history until
+  compaction. The "only when text changes" dedupe is correct; the "replacement/shadowing" claim in
+  the first version of §8 was wrong. Consequences: pulse changes must be infrequent and coalesced;
+  M0 measures snapshot count vs session length; the fallback if accumulation is material is a
+  near-static pulse (or a `systemPrompt.section`-static overview + content in `confluence_board`),
+  escalated as an ADR amendment. Ref: ADR-0003 §4, `docs/design/pulse.md` §4.3.
+- **E2 — `privacy.redactPatterns` added to the config shape (§10).** §11 promises configurable
+  redaction patterns, so the default config carries an empty `redactPatterns: []` list of user
+  patterns in addition to the built-in patterns. Ref: `docs/design/config.md`.
+- **E3 — `export.dir` is workspace-relative only.** The export path is resolved inside the
+  workspace (default `.confluence/export/`); absolute/`..` paths are rejected so an opt-in export
+  can never write outside the workspace it describes. `.confluence/` is ignored in this
+  repository's `.gitignore`. Ref: `docs/design/solo-bench-integration.md`.
+- **E4 — UI mark-read is a user cursor, not a model watermark.** The panel's "mark read" only
+  advances a user-visible cursor (panel state); it does not advance the agent's `boardReadSeq`,
+  which remains derived from the committed session log. A human reading the board does not mean
+  the model saw it. Ref: `docs/design/ui.md` §3.8.
+- **E5 — Pulse headline cursor semantics confirmed.** `New:` lines are keyed to `boardReadSeq`
+  (unread), while `digestSeq` is the commit/welcome/`seq` cursor; one commit per state change,
+  welcome→steady costs one settle commit. This is the interpretation recorded in ADR-0003 §3.
+- **E6 — `digestSeq`/`boardReadSeq` fold from both dispatch paths.** `boardReadSeq` folds markers
+  from `tool/result` **and** `tool/ptc-dispatch`; `digestSeq` folds the pulse section's `seq=`
+  attribute from the committed snapshot. Ref: `docs/design/pulse.md` §5.
+- **E7 — M4 rescoped, v0.1.0 release target.** Accepted plan deviation (a): v0.1.0 M4 ships
+  compaction/export + manifest, docs/publishing/install verification and soak/concurrency tests;
+  the per-session unread badge, custom in-chat tool cards and the human composer/thread UI move to
+  **v0.1.1**. The execution plan's dates (M0 2026-11-16 → v0.1.0 2026-12-02, worst case 2026-12-08,
+  13.0 engineer-days ±30 %) are the accepted schedule. Ref: `docs/plan/execution-plan.md`.
+- **E8 — Export contract naming is final in ADR-0002 / `store-format.md` §14.** The export is
+  `<workspace>/.confluence/export/memories.v1.jsonl` + `manifest.json` (written last, atomically);
+  the manifest's top-level keys are `schema: "confluence.memories/v1"` and `formatVersion: 1`
+  (not `format`), plus `producer`, `generatedAt`, `workspace{wsKey,name}`, `recordCount`,
+  `firstSeq`, `lastSeq`, `files[{name,bytes,sha256}]`, `redaction`, `limits`. Tombstoned entries
+  are exported as content-free stubs (`deleted: true`), not omitted. The store's own
+  `MANIFEST.v1.json` is a different file with a different purpose. `store-format.md` §14 is
+  authoritative over every consumer summary.
+- **E9 — Identifier conventions.** Board entry ids `cnf_<26-char ULID>`, tombstones
+  `tmb_<26-char ULID>`, v2 signals reserved `sig_<26-char ULID>`; `seq` is a 26-char uppercase
+  Crockford-base32 ULID string ordered lexicographically; `writerId = <pid>-<8 lowercase hex>`;
+  shard file `journal.<writerId>.v1.jsonl`; `ts` is an ISO-8601/RFC 3339 UTC string. Ref:
+  `docs/design/data-model.md` §2.2, `docs/design/store-format.md`.
+- **E10 — Append primitive correction.** The journal uses a held `O_APPEND` file descriptor plus
+  `writeSync` of whole lines (not `fs.appendFile`), with batched `fsync`; board posts `fsync`
+  before acknowledging, while ledger/presence rows may lose the last record on a crash (readers
+  ignore an incomplete tail). `writeFileAtomic` is still only for compaction/export/manifest
+  replacement, never the append path. Ref: ADR-0002, `store-format.md` §13.
+- **E11 — Private/opted-out sessions get no Confluence tools at all** (in addition to no pulse,
+  no ledger rows and no journal writes), so a private session cannot publish into or read the
+  workspace memory even via the model. Workspace metadata (canonical path, createdAt, generation)
+  lives in the store's `MANIFEST.v1.json`; there is no separate workspace-metadata file.

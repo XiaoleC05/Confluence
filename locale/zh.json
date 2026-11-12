@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "title": "汇流",
+    "description": "DeepSeek Harness 的设计阶段工作区记忆插件：被动脉冲、共享看板与按需回溯；当前尚未实现任何能力。"
+  },
+  "ui": {
+    "panel": "汇流",
+    "board.title": "工作区看板",
+    "board.subtitle": "同一工作区的会话共享的笔记",
+    "board.empty": "还没有共享笔记。会话可以用 confluence_post 发布笔记。",
+    "board.unread": "{n} 条未读",
+    "pulse.title": "工作区脉动",
+    "pulse.empty": "其他会话暂无新内容。",
+    "recall.title": "从早前的会话中回溯",
+    "recall.empty": "本工作区中没有匹配的早前会话。",
+    "workspace.label": "工作区",
+    "workspace.unavailable": "当前会话无法使用工作区记忆。",
+    "search.label": "搜索看板",
+    "search.placeholder": "搜索笔记、标签和类型",
+    "search.empty": "没有匹配的看板笔记。",
+    "questions.open": "未解决的问题",
+    "handoffs.open": "待接手的交接",
+    "peers.live": "{n} 个会话活跃",
+    "markRead": "全部标为已读",
+    "markRead.done": "所有笔记已标为已读。",
+    "entry.open": "打开",
+    "entry.resolved": "已解决",
+    "ledger.title": "最近的会话"
+  }
+}

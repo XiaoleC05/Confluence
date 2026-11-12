@@ -431,8 +431,14 @@ Consequences for Confluence:
 - Use `systemPrompt.context` for everything passive. Build the digest string deterministically from
   (a) the workspace board's monotonically increasing `seq` and (b) the session's own last-consumed
   `seq`/`asOf` watermark; render `""` when `boardSeq <= consumedSeq`. Unchanged digest ⇒ zero
-  messages. Changed digest ⇒ exactly one snapshot replacement message per change (the loop writes a
-  replacement that shadows the previous snapshot, so history does not accumulate copies).
+  messages. Changed digest ⇒ exactly one new runtime-context snapshot message per change.
+  **Correction (round 3, verified against `dsh-agent-loop/lib/index.js:859-866` and
+  `dsh-session/lib/index.js:1681-1696`):** the changed snapshot is **appended** as a new user-role
+  `runtime-context` surface node; it does not replace/shadows the previous snapshot, and
+  `deriveMessages()` keeps every surface node, so repeated changes accumulate messages until
+  compaction. Consequence: keep pulse changes infrequent and byte-stable, measure snapshot count
+  vs session length (M0 spike S1), and prefer coalesced changes; a near-static pulse is the
+  fallback if accumulation is material.
 - Persist the watermark **in the session log**, not only in memory, or it is lost on resume/fork.
   There is no plugin-owned event type available (see §8), so derive the watermark from the
   snapshot's presence: the runtime-context snapshot message contains the board seq you emitted;

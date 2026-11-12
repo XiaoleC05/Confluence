@@ -1,0 +1,112 @@
+# Confluence / 汇流 — bundle patch (design-stage scaffold)
+#
+# Installing this bundle inserts exactly one Loader row, `confluence`, whose
+# `config` is the complete v1 default configuration. The row mounts the plain
+# ESM host plugin in ./index.js.
+#
+# At design stage that plugin only validates configuration and logs exactly one
+# activation warning; it registers no tools, no prompt context, no routes and no
+# UI. Installing this bundle has no user-visible effect yet (see README.md
+# "Status" and docs/install.md).
+#
+# Binding design:
+#   docs/adr/0001-confluence-architecture.md  §2 architecture, §10 this config
+#   docs/design/config.md                     configuration contract
+#   docs/design/architecture.md               component boundaries (M1+)
+#   docs/plan/execution-plan.md               milestones (M1 core starts here)
+#
+# A user override in the profile's own cordis.patch.yml replaces this complete
+# `config` object rather than deep-merging it. Copy the whole block and change
+# only what you need; ready-made examples: examples/profile-patch.yml.
+- insert:
+    - id: confluence
+      name: dsh-confluence
+      config:
+        # Master switch. false keeps the row mounted but makes every later
+        # Confluence feature a no-op (M1+). At design stage it is reported in
+        # the single activation warning.
+        enabled: true
+
+        # Store: profile-local, append-only JSONL journals (ADR §6).
+        store:
+          # Empty string = $DSH_HOME/storages/confluence/v1. An absolute path is
+          # accepted but discouraged; relative paths resolve against the
+          # profile's storage area. The plugin never writes inside the
+          # workspace by default.
+          dir: ''
+          # Journal records older than this become eligible for M4 compaction.
+          retentionDays: 90
+          # Hard per-workspace cap enforced at the read/write boundary (v1 has
+          # no compaction until M4, so this bounds growth).
+          maxEntriesPerWorkspace: 2000
+          # Maximum serialized size of one board note body, in bytes.
+          maxBodyBytes: 8192
+          # Freshness contract: readers poll this often. fs.watch is only an
+          # optimization and must degrade to polling.
+          pollMs: 4000
+          # Best-effort fs.watch acceleration (debounced, try/catch wrapped).
+          watch: true
+
+        # Pulse: the passive, byte-stable workspace digest injected through one
+        # global systemPrompt.context contribution (ADR §8).
+        pulse:
+          enabled: true
+          # Unread board headlines rendered per step (design maximum 3).
+          maxHeadlines: 3
+          # Live peer session titles rendered per step (design maximum 2).
+          maxPeers: 2
+          # Hard character cap for the rendered pulse (200–320 token target).
+          maxChars: 1400
+
+        # Ledger: metadata-only, live-first session awareness (ADR §9).
+        ledger:
+          enabled: true
+          # Distinct workspace-relative paths recorded per session.
+          maxFilesPerSession: 8
+          # Ledger rows retained per workspace in the journal.
+          maxSessionsPerWorkspace: 200
+          # File hints are deliberately never rendered in the pulse (privacy).
+          fileHintsInPulse: false
+
+        # Recall: explicit, read-only, literal search over same-workspace
+        # session logs through ctx.sessionQuery exact reads (ADR §9).
+        recall:
+          enabled: true
+          # Prior sessions searched per call.
+          maxSessions: 3
+          # Matching events returned per call across sessions.
+          maxHits: 5
+          # Cooperative timeout for one recall call.
+          timeoutMs: 5000
+
+        # Privacy: the workspace is the consent boundary; these are best-effort
+        # user controls, not a sandbox (ADR §11).
+        privacy:
+          # Redact API keys, tokens, private keys and password-like values.
+          redact: true
+          # Redact titles as well (titles are derived from prompts).
+          redactTitles: true
+          # Glob patterns whose path hints are never recorded.
+          denyPathPatterns:
+            - '**/.env*'
+            - '**/*.pem'
+          # Session ids that never contribute ledger rows or pulse text.
+          privateSessions: []
+          # Canonical workspace keys or paths that stay entirely opt-out.
+          disabledWorkspaces: []
+
+        # UI: read-only panel (M3). No effect at design stage.
+        ui:
+          enabled: true
+          # Panel refresh interval while visible.
+          pollMs: 5000
+
+        # Export: opt-in, explicit user action, deterministic and redacted.
+        # Writes memories.v1.jsonl under <workspace>/.confluence/export/ (M4).
+        export:
+          enabled: false
+          dir: '.confluence/export'
+
+        # Debug: empty string = no debug log file; M1 wires the writer.
+        debug:
+          logFile: ''

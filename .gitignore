@@ -25,3 +25,6 @@ desktop.ini
 # Local exports / private notes (never commit user session content)
 confluence-export/
 *.local.json
+
+# Confluence workspace export (opt-in, local)
+.confluence/

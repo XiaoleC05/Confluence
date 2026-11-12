@@ -53,10 +53,12 @@ and `.title`, `conversation.session.header.utilities`, `rightbar.session`), the 
    path and collisions are detectable.
 3. **The passive channel exists and is cheap.** A single global `ctx.systemPrompt.context()`
    contribution is rendered per agent step; the agent loop commits a new runtime-context snapshot
-   **only when the rendered text changes**, and a changed snapshot replaces the previous one.
-   Providers are synchronous; the runtime assembly object carries `agent`. So a byte-stable
-   digest costs zero tokens on repeat steps and never accumulates copies — no wake, no polling,
-   no `agent.inject()` churn. This is the technical heart of "the user no longer has to ask".
+   **only when the rendered text changes** (an unchanged pulse commits nothing and costs no new
+   tokens). An early draft of this record said a changed snapshot *replaces* the previous one;
+   round 3 verified against the installed loop that it is appended as a new user-role runtime-context
+   message, so snapshots accumulate until compaction — see ADR-0001 §17 E1. Providers are
+   synchronous; the runtime assembly object carries `agent`. No wake, no polling, no
+   `agent.inject()` churn. This is the technical heart of "the user no longer has to ask".
 4. **The workspace store must survive multiple DSH windows.** The profile's `storageDomain` /
    `storage-json` stack is framework-native but has **no cross-process write lock** and its
    `domain/changed` event is in-process only; `single` layout rewrites the whole unit.

@@ -1,0 +1,51 @@
+{
+  "name": "dsh-confluence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Design-stage DeepSeek Harness bundle for workspace-scoped shared memory (Confluence / 汇流): a passive pulse, a durable shared board, and metadata-only ledger plus on-demand recall. No capability is implemented yet; this repository currently ships the complete design, packaging scaffold and contract tests.",
+  "author": "XiaoleC05",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XiaoleC05/Confluence.git"
+  },
+  "homepage": "https://github.com/XiaoleC05/Confluence#readme",
+  "bugs": {
+    "url": "https://github.com/XiaoleC05/Confluence/issues"
+  },
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "check": "node scripts/check.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "confluence",
+    "workspace-memory",
+    "offline"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

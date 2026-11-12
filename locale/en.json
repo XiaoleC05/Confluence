@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "title": "Confluence",
+    "description": "Design-stage workspace memory for DeepSeek Harness: a passive pulse, a shared board, and on-demand recall. No capability is implemented yet."
+  },
+  "ui": {
+    "panel": "Confluence",
+    "board.title": "Workspace board",
+    "board.subtitle": "Notes shared by sessions in this workspace",
+    "board.empty": "No shared notes yet. Sessions can publish notes with confluence_post.",
+    "board.unread": "{n} unread",
+    "pulse.title": "Workspace pulse",
+    "pulse.empty": "Nothing new from other sessions.",
+    "recall.title": "Recall from earlier sessions",
+    "recall.empty": "No earlier session in this workspace matched.",
+    "workspace.label": "Workspace",
+    "workspace.unavailable": "Workspace memory is unavailable for this session.",
+    "search.label": "Search the board",
+    "search.placeholder": "Search notes, tags and kinds",
+    "search.empty": "No board notes matched.",
+    "questions.open": "Open questions",
+    "handoffs.open": "Open handoffs",
+    "peers.live": "{n} active now",
+    "markRead": "Mark all read",
+    "markRead.done": "All notes marked read.",
+    "entry.open": "Open",
+    "entry.resolved": "Resolved",
+    "ledger.title": "Recent sessions"
+  }
+}
