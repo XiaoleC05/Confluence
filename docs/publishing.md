@@ -1,10 +1,10 @@
 # Publishing and release process (v0.1.0)
 
-- Status: **v0.1.0 implemented, committed and tagged locally; no npm package and no GitHub release
-  exist.** The repository working tree is clean at tag `v0.1.0`; the GitHub remote still carries the
-  design-phase commit because this machine currently cannot reach `github.com:443` (and the credential
-  helper cannot be prompted in the automated session). Nothing in this document is a claim that a
-  public release happened.
+- Status: **v0.1.0 implemented, committed, tagged and pushed to GitHub; no npm package and no GitHub release
+  exist.** The repository working tree is clean at tag `v0.1.0`; the GitHub remote
+  `main` is at release commit `6755bd7` and the annotated tag `v0.1.0` is pushed (verified via
+  `git ls-remote`, tag object `792b686`). No npm package or GitHub Release page was created. Nothing
+  in this document is a claim that an npm/public package release happened.
 - Current artifact: `dsh-confluence` **v0.1.0**, `"private": true`, MIT — 15 host modules under `lib/`,
   the host entry `index.js`, the read-only panel (`client.js`), export producer (`lib/export.js` +
   `scripts/export-memories.mjs`), locale resources, icon, bundle patch and design documentation.
@@ -18,12 +18,12 @@
 
 | Item | State |
 |---|---|
-| GitHub repository | `https://github.com/XiaoleC05/Confluence.git` — public; **design phase pushed** (`design-v1`); v0.1.0 push pending connectivity |
+| GitHub repository | `https://github.com/XiaoleC05/Confluence.git` — public; **design phase (`design-v1`) and v0.1.0 (`main` @ `6755bd7`, tag `v0.1.0`) are pushed** |
 | Local repository | `D:\05_Code\Confluence`, branch `main`, remote `origin` set; **clean tree at commit `5dccc12`, tags `design-v1` + `v0.1.0`** |
-| v0.1.0 implementation | **Committed + tagged locally** (`git log --oneline --decorate`); `v0.1.0` is a local annotated tag |
-| Push from this machine | **Blocked at release time:** `github.com:443` unreachable / connection reset and interactive credential prompts disabled. Retry: `git push origin main --tags` from an interactive shell when the network/credentials work. Local commits and tags are the authoritative release artifacts in the meantime. |
+| v0.1.0 implementation | **Committed + tagged + pushed** (`git log --oneline --decorate`; `git ls-remote` confirms `main` = `6755bd7` and tag object `792b686`) |
+| Push from this machine | **Executed over SSH** (`origin` push URL `git@github.com:XiaoleC05/Confluence.git`; the local SSH config routes `github.com` through `ssh.github.com:443` with `~/.ssh/id_ed25519`). HTTPS git pushes were network-unstable at release time; use SSH (`git push origin main --tags`) from this machine. |
 | npm package | **Does not exist**; `"private": true` prevents accidental publication |
-| GitHub release / tag | **Local tag `v0.1.0` exists; remote tag/release pending the push** |
+| GitHub release / tag | **Tag `v0.1.0` pushed**; no GitHub Release page was created (optional, separate step) |
 | Verification state | Executed: offline suite 256/256, packaging 12/12, M0 smoke 14 pass/1 blocked, scratch-profile E2E 8/8, real-profile install + activation + pulse + board tool call, export CLI + solo-bench Go consumer. Not executed: panel visual rendering, PTC tool reachability, multi-window freshness, soak/compaction, publish (see `install.md`). |
 
 ## 2. Versioning policy
