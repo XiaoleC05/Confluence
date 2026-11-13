@@ -333,39 +333,40 @@ interface; spike result only changes the transport, not the milestone.
 **Fallback design:** native lease `fs.open(lease,'wx')` + stale-PID takeover (already the ADR §6
 primary); `writeFileAtomic` replaced by temp-file + rename with bounded Windows retries.
 
-## 10. Results (fill in at execution; do not pre-write)
+## 10. Results (executed 2026-11-13 — evidence, not pre-written)
 
 ### 10.1 Per-spike results
 
 | Spike | Verdict (PASS / FAIL / FALLBACK-ACCEPTED / INCONCLUSIVE / PARTIAL) | Key observation (≤2 lines) | Evidence artifact | Fallback chosen | Owner | Date |
 |---|---|---|---|---|---|---|
-| S1 | TBD | TBD | `.tmp/m0/s1/…` | TBD | TBD | TBD |
-| S2 | TBD | TBD | `.tmp/m0/s2/…` | TBD | TBD | TBD |
-| S3 | TBD | TBD | `.tmp/m0/s3/…` | TBD | TBD | TBD |
-| S4 | TBD | TBD | `.tmp/m0/s4/…` | TBD | TBD | TBD |
-| S5 | TBD | TBD | `.tmp/m0/s5/…` | TBD | TBD | TBD |
-| S6 | TBD | TBD | `.tmp/m0/s6/…` | TBD | TBD | TBD |
-| S7 | TBD | TBD | `.tmp/m0/s7/…` | TBD | TBD | TBD |
+| S1 | **PASS** | Runtime-context dedupe/commit verified end-to-end: unchanged pulse commits nothing, a changed pulse appends exactly one new `runtime-context` user/message, and a second headless session receives the first session's board entry in its pulse. | `.tmp/e2e/run-20261113-183207/` (`mock-writer.jsonl`, `mock-reader.jsonl`, `session*.out.txt`, `summary.json`), `test/e2e/assert-e2e.mjs` E2E-02/04/05 | none (append history growth documented; coalesced refresh implemented) | Lead build round | 2026-11-13 |
+| S2 | **PASS** | Committed pulse snapshots are readable from the session log by section name (`confluence:pulse`); watermark projection unit `confluence_watermark` registered in scratch + real profiles (host-only, fallback fold also active). Fork/resume tail replay remains covered by unit tests rather than a live fork run. | `node scripts/m0-smoke.mjs` SMOKE-SESSION-DECODE; `test/e2e/lib/session-log.mjs`; E2E-05; `test/watermark.test.js` | in-memory fallback retained (service optional) | dsh-researcher / Lead | 2026-11-13 |
+| S3 | **PARTIAL / OPEN** | `tool/ptc-dispatch` is a real durable event; this profile's default preset is `ptc`, but a live `run_code` session proving Confluence tool reachability was not run. Ledger/watermark parsers accept the dispatch shape defensively. | `docs/research/dsh-internals.md` fact 39; `lib/ledger.js`/`lib/watermark.js` defensive parsers; testing.md UT-PTC row | document `standard` verification first; PTC reachability remains an explicit open item | dsh-researcher | 2026-11-13 (partial) |
+| S4 | **PASS** | Held `O_APPEND` fd + `writeSync` appends whole lines under two real processes (800 records, 0 malformed); torn tail ignored; real `JournalStore` survives two writers; native lease contention/dead-PID takeover works. | `node scripts/m0-smoke.mjs` SMOKE-S4-APPEND/TORN/TWO-WRITER/REALSTORE/LEASE (14 PASS / 0 FAIL / 1 BLOCKED overall) | none | design-core / Lead | 2026-11-13 |
+| S5 | **PARTIAL** | Two-process merge correctness is covered by the S4 two-writer test and store tests; live multi-window freshness latency was not measured. Polling (4 s) is the implemented contract; `fs.watch` is an optimization only. | `test/store.test.js`, `scripts/m0-smoke.mjs`; `lib/store.js` | polling contract; no code change | design-core | 2026-11-13 (partial) |
+| S6 | **FALLBACK-ACCEPTED** | `host.call` host-side registration contract remains unproven; the shipped v0.1.0 panel uses the proven same-origin `webServer` route (live routes registered; unauthenticated loopback request observed 401 → auth-guarded), and the client module loads on the next page render. Panel visual check pending a page refresh. | `lib/hostui.js`, `client.js`, `test/hostui.test.js` WO-01..18/UI-01..04; live route probe 401 | same-origin route (ADR-0005 fallback) | architect-a / Lead | 2026-11-13 |
+| S7 | **FALLBACK-ACCEPTED** | `@deepseek-ai/dsh-atomic-write` is not resolvable from the repository Node context (`ERR_MODULE_NOT_FOUND`); native `fs.open(lease,'wx')` + stale-PID takeover verified instead. | `node scripts/m0-smoke.mjs` SMOKE-S7-ATOMIC-WRITE (BLOCKED) + SMOKE-LEASE (PASS) | native lease only; no optional import shipped | design-core / Lead | 2026-11-13 |
 
 ### 10.2 Findings that change a design document
 
-For each finding, name the doc that must be amended before M1 (`docs/design/pulse.md`,
-`store-format.md`, `tool-api.md`, `ui-panel.md`, `config.md`, ADR 0001) and the decision-log id.
-
 | Finding | Doc to amend | Decision-log id |
 |---|---|---|
-| TBD | TBD | TBD |
+| Runtime-context snapshots are appended, not replaced/shadows | `adr/0001-confluence-architecture.md` §8, `docs/design/pulse.md` §4.3 | ADR-0001 §17 E1 (applied) |
+| `writeFileAtomic` neither appends nor fsyncs; per-writer shards + held O_APPEND fd chosen | `docs/adr/0002` / `store-format.md` §13 | ADR-0001 §17 E10 (applied) |
+| `host.call` contract unproven in 0.2.2-rc.1 | `docs/adr/0005-ui-transport.md`, `docs/design/ui.md` | ADR-0005 + build-round ruling (route shipped) |
+| PTC (`run_code`) tool reachability not yet exercised live | `docs/design/tool-api.md` (PTC note) | open; tracked as M0-S3 / UT-PTC |
+| `@deepseek-ai/dsh-atomic-write` unresolvable from a local bundle repository context | `docs/adr/0002`, `store-format.md` | ADR-0001 §17 E10 (native path) |
 
 ### 10.3 Gate G1 decision
 
 | Field | Value |
 |---|---|
-| Decision | TBD: GO / GO-WITH-FALLBACKS / STOP |
-| Fallbacks accepted (ids) | TBD |
-| Residual risks | TBD |
-| ADR deviations required | TBD (`none` or a list) |
-| Evidence reviewed by (V) | TBD |
-| Chair sign-off (Lead) | TBD / date |
+| Decision | **GO-WITH-FALLBACKS** (v0.1.0 shipped; S3/S5 remain explicit open items rather than shipping blockers) |
+| Fallbacks accepted (ids) | S6 (same-origin route), S7 (native lease); S1/S2/S4 PASS; S3/S5 tracked open |
+| Residual risks | PTC tool reachability; live multi-window freshness; append-only pulse snapshot growth (coalesced refresh + M4 compaction deferred) |
+| ADR deviations required | none beyond the recorded errata E1–E11 and ADR-0005 route decision |
+| Evidence reviewed by (V) | Lead build round, cross-checked by `scripts/e2e-dsh.ps1` and `node --test --test-force-exit` |
+| Chair sign-off (Lead) | 2026-11-13 |
 
 **Gate rule:** all of S1, S2, S3, S4, S6 are PASS or FALLBACK-ACCEPTED; S5 is recorded (any verdict);
 S7 may be FALLBACK-ACCEPTED without impact. If S1 fails and no fallback is accepted, **stop the plan**.

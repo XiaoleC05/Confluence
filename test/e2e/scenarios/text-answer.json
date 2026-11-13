@@ -1,0 +1,17 @@
+{
+  "//": "Deterministic E2E scenario: title utilities get a short title; the task request gets one text answer. Used by scripts/e2e-dsh.ps1 baseline scenario and by the second (reader) session of the pulse scenario.",
+  "default": { "text": "Mock default answer (no matching scenario rule)." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Mock E2E session title"
+    },
+    {
+      "when": { "hasToolResult": true },
+      "text": "Tool results acknowledged by the mock model. Final E2E answer."
+    },
+    {
+      "text": "Hello from the Confluence E2E mock model. No tools were needed."
+    }
+  ]
+}

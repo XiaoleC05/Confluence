@@ -1,0 +1,25 @@
+{
+  "//": "Deterministic E2E scenario: the first task request asks for one confluence_post tool call, the follow-up request closes the turn with text. Used by the pulse scenario (writer session). The tool input satisfies docs/design/tool-api.md confluence_post: kind/title/body/tags.",
+  "default": { "text": "Mock default answer (no matching scenario rule)." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Mock E2E writer session"
+    },
+    {
+      "when": { "hasToolResult": true },
+      "text": "Board note accepted by the mock model; the turn is complete."
+    },
+    {
+      "toolUse": {
+        "name": "confluence_post",
+        "input": {
+          "kind": "gotcha",
+          "title": "E2E harness gotcha",
+          "body": "Synthetic workspace gotcha written by the offline Confluence E2E harness. Safe to delete.",
+          "tags": ["e2e", "fixture"]
+        }
+      }
+    }
+  ]
+}

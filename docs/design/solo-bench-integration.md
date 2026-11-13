@@ -1,11 +1,13 @@
 # solo-bench × Confluence — integration and export-consumer design
 
-Status: **design for a later phase; no changes to `solo-bench` or `D:\05_Code\Confluence` happen in
-this design phase.** This document is the complete merge plan and the contract that lets `solo-bench`
-(the personal offline Go workbench) read Confluence's shared memory **without** depending on DSH, the
-plugin runtime, or any live process. Binding decisions: [ADR 0006](../adr/0006-solo-bench-integration.md);
-context: [ADR 0001](../adr/0001-confluence-architecture.md) §6/§13/§14,
-[testing.md](testing.md) §11, and the `Crisp` precedent
+Status: **merge + consumer are for a later phase; the export producer is implemented in v0.1.0.**
+No changes to `solo-bench` or to the DSH profile happen in this phase. This document is the complete
+merge plan and the contract that lets `solo-bench` (the personal offline Go workbench) read
+Confluence's shared memory **without** depending on DSH, the plugin runtime, or any live process.
+Binding decisions: [ADR 0006](../adr/0006-solo-bench-integration.md) (Proposed for the merge; the
+producer side is implemented — see §6.5); context:
+[ADR 0001](../adr/0001-confluence-architecture.md) §6/§13/§14, [testing.md](testing.md) §11, and the
+`Crisp` precedent
 ([`Crisp/docs/integrations/deepseek-harness.md`](../../../Crisp/docs/integrations/deepseek-harness.md) §4,
 [`Crisp/integrations/dsh-plugin-crisp/`](../../../Crisp/integrations/dsh-plugin-crisp/)).
 
@@ -298,6 +300,37 @@ A future `solo-bench` consumer implements `confluence.memories/v1` only until it
 Confluence repo's M4 fixtures (`test/fixtures/export/`) are the conformance examples both sides test
 against; the authoritative rules are [`store-format.md`](store-format.md) §14.
 
+### 6.5 Implementation status — producer side, executed 2026-11-13
+
+The **producer** half of this contract is implemented in v0.1.0 and tested; the subtree merge and the
+Go consumer remain future phases ([ADR 0006](../adr/0006-solo-bench-integration.md) stays
+**Proposed**).
+
+| Piece | Path | Status / evidence |
+|---|---|---|
+| Export library | `lib/export.js` (`exportWorkspace`, `validateExportDir`, `stripAbsolutePaths`, `workspaceLabelFor`) | Implemented. Reads merged journal records through `JournalStore`, folds them with `foldRecords`, writes the pair outside the store, never reads it back. |
+| CLI | `scripts/export-memories.mjs` (`run()` exported for in-process tests) | Implemented. `node scripts/export-memories.mjs --dsh-home <dir> --workspace <path> [--out <dir>] [--json] [--dry-run]`. Exit 0 success; 1 runtime failure (`export-memories: <CODE>: <message>`, codes `NOT_FOUND`, `STORE_UNAVAILABLE`, `BAD_ARGUMENT`, `EXPORT_FAILED`); 2 usage error. `--out` is workspace-relative only (rooted/`..` rejected); default `<workspace>/.confluence/export/`. |
+| Tests | `test/export.test.js` | **Executed:** `node --test --test-force-exit "test/export.test.js"` → 10/10 pass (EXP-01..10): mapping/order, live-only counts, tombstone stubs, manifest hash/bytes, redaction/absolute-path stripping, determinism, store read-only + dry run, fail-closed failures, CLI run() paths, helper contracts. |
+| Integrity rule (V7) | `lib/export.js` manifest builder | Implemented literally: `files[0].bytes`/`sha256` cover the complete JSONL **including tombstone stubs**; `recordCount`/`firstSeq`/`lastSeq` count **live** records only. |
+| Caps | `lib/export.js` | Per-line 64 KiB enforced; total file capped at 8 MiB by deterministic tail truncation with `limits.truncated: true`; `maxEntriesPerWorkspace` recorded in `limits`. |
+| E2E proof | `.tmp/e2e/run-20261113-183207/dsh-home` scratch store | **Executed:** the CLI exported the real E2E scratch store (workspace `ws_35ca2d7650a1831a`) to `<workspace>/.confluence/export/` — `recordCount: 1`, seq range `01M7A7DYERF1P01M74E9TT2CGN..01M7A7DYERF1P01M74E9TT2CGN`, `files[0]` 564 bytes, sha256 `39d0ffe9…4247`; `--dry-run` reported the same hashes and wrote nothing. |
+| UI/tool surface | — | **Not implemented in v0.1.0:** no panel "Export now" button and no model-facing export tool; the CLI *is* the explicit user action. Panel export stays future (v0.1.1+). |
+| Go consumer, subtree merge, fixtures | — | **Not started** (separate approved phase). `test/fixtures/export/` conformance fixtures land together with the consumer, so the Go side copies frozen fixtures instead of reading this repository at test runtime. |
+
+Implementation notes / deviations from the design sketch (all reviewed, none contract-breaking):
+
+1. `exportWorkspace()` accepts optional test seams (`now`, `fs`, `writerId`, `dryRun`) in addition to
+   the agreed `{store, board?, config, redactor, workspaceKey, outDir, logger}` call; production
+   callers pass only the agreed fields. `dryRun` is what the CLI's `--dry-run` uses.
+2. The CLI lives in `scripts/` (a repository tool like `scripts/check.mjs`), not in the published
+   package `files` list; `config.export.enabled` stays `false` by default, so nothing is exported
+   unless the user runs the CLI (an explicit action equivalent to the designed "Export now").
+3. Retention hides older entries from the export (design §13.3 step 2) and is reported as
+   `skippedRetention` in the CLI summary; it is not `limits.truncated` (retention is a documented
+   filter, not a cap).
+4. A redactor failure aborts the export with `EXPORT_FAILED` **before** any file is written (fail
+   closed); the pair is never partially published.
+
 ## 7. Read-only Go consumer design (later phase; nothing implemented now)
 
 ### 7.1 Package and types (proposed)
@@ -424,14 +457,20 @@ behavior and no external program; adding a fifth fixed-row service would break t
 - No new license file at the `solo-bench` root; the vendored subtree keeps its upstream `LICENSE`.
 - No subtree push automation or CI; updates are a manual, reviewed command.
 
-## 9. Testing and conformance (later)
+## 9. Testing and conformance (producer executed; consumer later)
 
-Confluence side (M4, in-repo): `EXP-01..05` prove deterministic JSONL bytes, manifest
-`files[0]` hash/byte and `recordCount`/`firstSeq`/`lastSeq` consistency, redaction/no-absolute-paths,
-tombstone-stub export, atomic publish, opt-in behavior. The `export/integrity-stubs/` fixture in
-[testing.md](testing.md) §11 fixes the V7 rule: hash/bytes over the complete file, counts over live
-records only, stub lines valid but counted out. The canonical examples live under
-`test/fixtures/export/` (`schema:"confluence.memories/v1"`, `formatVersion:1`, `cnf_` ids).
+Confluence side (implemented and executed 2026-11-13): `EXP-01..10` in `test/export.test.js` prove
+record mapping/ordering, live-only `recordCount`/`firstSeq`/`lastSeq`, tombstone stubs, manifest
+`files[0]` hash/byte coverage over the complete file, redaction/no-absolute-path output,
+determinism (byte-identical JSONL), store read-only + no read-back + dry run, fail-closed failure
+modes, the CLI `run()` paths, and the helper contracts. Command:
+`node --test --test-force-exit "test/export.test.js"` → **10/10 pass**. The V7 integrity rule
+(hash/bytes over the complete file, counts over live records only, stub lines valid but counted out)
+is implemented exactly; the end-to-end CLI proof against the E2E scratch store is recorded in §6.5.
+
+Conformance fixtures `test/fixtures/export/` are **not committed yet**: they land with the approved
+Go-consumer phase so that the Go side copies frozen fixtures into its `testdata/` instead of reading
+this repository at test runtime (`schema:"confluence.memories/v1"`, `formatVersion:1`, `cnf_` ids).
 
 `solo-bench` side (future phase): table-driven Go tests against small `testdata/confluence/` fixtures
 copied from the Confluence fixtures at merge time (vendored subtree paths are not stable test inputs):
@@ -447,8 +486,8 @@ same hashes at development time. No runtime coupling, no CI.
 ## 10. Merge execution checklist (later phase — do not run now)
 
 1. Preconditions: Confluence `v0.1.0` tagged and its release checklist done; export contract frozen
-   (`EXP-01..05` green); `solo-bench` phase explicitly approved by the user; clean worktree;
-   `D:\05_Code\Confluence` present locally.
+   (`EXP-01..10` green — executed 2026-11-13, see §6.5/§9); `solo-bench` phase explicitly approved by
+   the user; clean worktree; `D:\05_Code\Confluence` present locally.
 2. Back up the DSH profile layer (outside both repos). Do not touch `~/.dsh` otherwise.
 3. `git remote add confluence D:\05_Code\Confluence`; fetch; `git subtree add … --squash` (§3).
 4. Add the minimal `.gitignore` entries for the merge: `integrations/dsh-plugin-confluence/node_modules/`

@@ -1,225 +1,513 @@
-// Confluence / 汇流 — Host plugin entry (design-stage scaffold).
+// Confluence / 汇流 — Host plugin entry (v0.1.0 implementation).
 //
-// This is the bundle's only runtime module in the design stage. It exists so
-// the packaging contract (package.json -> dsh.bundle.patch -> this row) can be
-// installed and inspected without pretending to work: `apply()` defensively
-// resolves the configuration and logs exactly one activation warning. It
-// registers no tools, no prompt context, no routes, no UI, no listeners, and
-// returns nothing.
+// Wires the modules described by the binding design (docs/adr/0001-*.md,
+// docs/plan/implementation-interfaces.md) onto the live Cordis context:
 //
-// Read before implementing (binding design):
-//   docs/adr/0001-confluence-architecture.md   v1 architecture and config (§10)
-//   docs/design/architecture.md                component boundaries (M1+)
-//   docs/design/store-format.md                journal/store contract
-//   docs/design/pulse.md                       passive digest contract
-//   docs/design/tool-api.md                    six model-facing tools
-//   docs/design/config.md                      configuration contract
-//   docs/design/testing.md                     acceptance criteria and tests
-//   docs/plan/execution-plan.md                milestones M0 -> M4
+//   config -> workspace resolver -> journal store -> board
+//          -> ledger / presence -> watermark -> pulse
+//          -> facade -> six model tools
+//          -> read-only panel routes (optional `webServer`)
 //
-// M1 adds, behind `apply`: JournalStore, WorkspaceResolver, BoardService,
-// PulseProvider (one systemPrompt.context registration), the Watermark
-// projection and the six tools. Partial stubs are intentionally NOT shipped:
-// an honest empty scaffold is safer than a fake implementation that looks real
-// to a model or a user.
+// Runtime constraints (ADR §3/§11): plain ESM + Node builtins only; no static
+// `@deepseek-ai/*` imports; no network calls; no additional listening port; no
+// child processes; no model calls. Shared content is untrusted data: it is
+// bounded, escaped and redacted before it reaches a model.
 //
-// Standing constraints (design §3, §11): plain ESM + Node builtins only; no
-// static @deepseek-ai/* imports; no network calls; no additional listening
-// port; no child processes; no model calls; all shared content is untrusted
-// data and must be bounded, escaped and redacted.
+// Activation is asynchronous (store/projection attachment is I/O): `apply()`
+// starts the bootstrap and returns; registrations that arrive late are normal
+// (the host re-reads tool/prompt contributions on the next step). A bootstrap
+// failure is logged and degrades to "plugin inactive", never a thrown plugin.
+
+import fsSync from 'node:fs'
+import fsPromises from 'node:fs/promises'
+
+import { ConfluenceError, createLogger, isoNow, makeWriterId } from './lib/util.js'
+import { DEFAULTS, publicConfig, resolveConfig } from './lib/config.js'
+import { canonicalizeDir, createWorkspaceResolver } from './lib/workspace.js'
+import { createRedactor } from './lib/redact.js'
+import { JournalStore } from './lib/store.js'
+import { BoardService } from './lib/board.js'
+import { SessionLedger } from './lib/ledger.js'
+import { Presence } from './lib/presence.js'
+import { WatermarkTracker } from './lib/watermark.js'
+import { PulseService } from './lib/pulse.js'
+import { RecallService } from './lib/recall.js'
+import { createTools, registerTools } from './lib/tools.js'
+import { registerHostUi } from './lib/hostui.js'
+import { ConfluenceFacade } from './lib/facade.js'
 
 /** Cordis plugin name used by Loader diagnostics. */
 export const name = 'confluence'
 
-/**
- * Complete v1 default configuration.
- *
- * Mirrors docs/adr/0001-confluence-architecture.md §10 and the bundle's own
- * cordis.patch.yml default config. Frozen so that a later component cannot
- * mutate shared defaults by accident.
- */
-export const DEFAULTS = Object.freeze({
-  enabled: true,
-  store: Object.freeze({
-    dir: '',
-    retentionDays: 90,
-    maxEntriesPerWorkspace: 2000,
-    maxBodyBytes: 8192,
-    pollMs: 4000,
-    watch: true,
-  }),
-  pulse: Object.freeze({ enabled: true, maxHeadlines: 3, maxPeers: 2, maxChars: 1400 }),
-  ledger: Object.freeze({
-    enabled: true,
-    maxFilesPerSession: 8,
-    maxSessionsPerWorkspace: 200,
-    fileHintsInPulse: false,
-  }),
-  recall: Object.freeze({ enabled: true, maxSessions: 3, maxHits: 5, timeoutMs: 5000 }),
-  privacy: Object.freeze({
-    redact: true,
-    redactTitles: true,
-    denyPathPatterns: Object.freeze(['**/.env*', '**/*.pem']),
-    privateSessions: Object.freeze([]),
-    disabledWorkspaces: Object.freeze([]),
-    redactPatterns: Object.freeze([]),
-  }),
-  ui: Object.freeze({ enabled: true, pollMs: 5000 }),
-  export: Object.freeze({ enabled: false, dir: '.confluence/export' }),
-  debug: Object.freeze({ logFile: '' }),
-})
+/** Required services: the tool registry is the plugin's primary surface. */
+export const inject = ['tools']
 
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
+/** Complete v1 default configuration (single source of truth: lib/config.js). */
+export { DEFAULTS }
+
+/** Plugin version reported by the panel ping route. */
+export const VERSION = '0.1.0'
 
 /**
- * Copy a known scalar config field, or fall back to the default and record one
- * warning. Kept deliberately boring: every field is defaulted, and a bad value
- * degrades instead of throwing (ADR §10).
+ * Host plugin entry.
  *
- * @param {Record<string, unknown>} out
- * @param {Record<string, unknown>} raw
- * @param {string} section
- * @param {string} key
- * @param {boolean|number|string} fallback
- * @param {string[]} warnings
+ * @param {object} ctx Cordis plugin context
+ * @param {object} [rawConfig] Loader row config (defensive object; see lib/config.js)
+ * @returns {undefined}
  */
-function takeScalar(out, raw, section, key, fallback, warnings) {
-  const source = isPlainObject(raw) ? raw : {}
-  if (!(key in source)) {
-    out[key] = fallback
-    return
-  }
-  const value = source[key]
-  const valid =
-    typeof fallback === 'boolean'
-      ? typeof value === 'boolean'
-      : typeof fallback === 'number'
-        ? typeof value === 'number' && Number.isFinite(value) && value >= 0
-        : typeof value === 'string'
-  if (valid) out[key] = value
-  else {
-    out[key] = fallback
-    warnings.push(`${section}.${key} ignored (invalid value); using default`)
-  }
-}
+export function apply(ctx, rawConfig) {
+  if (ctx === null || typeof ctx !== 'object') return undefined
+  /** @type {{disposed: boolean, booted: boolean, services: object | null}} */
+  const state = { disposed: false, booted: false, services: null }
 
-/**
- * Copy a string-array config field, dropping non-string entries and falling
- * back to the default array when the value is not an array.
- *
- * @param {unknown} value
- * @param {readonly string[]} fallback
- * @returns {string[]}
- */
-function takeStringArray(value, fallback) {
-  if (!Array.isArray(value)) return [...fallback]
-  return value.filter((item) => typeof item === 'string')
-}
-
-/**
- * Resolve the Loader row config against the v1 defaults.
- *
- * @param {unknown} raw loader row config (untrusted, possibly absent)
- * @returns {{ config: Record<string, unknown>, warnings: string[] }}
- */
-export function resolveConfig(raw) {
-  const warnings = []
-  const source = isPlainObject(raw) ? raw : {}
-  const sections = {
-    store: DEFAULTS.store,
-    pulse: DEFAULTS.pulse,
-    ledger: DEFAULTS.ledger,
-    recall: DEFAULTS.recall,
-    ui: DEFAULTS.ui,
-    export: DEFAULTS.export,
-    debug: DEFAULTS.debug,
-  }
-
-  const config = { enabled: DEFAULTS.enabled }
-  const enabledRaw = source.enabled
-  config.enabled = typeof enabledRaw === 'boolean' ? enabledRaw : DEFAULTS.enabled
-  if ('enabled' in source && typeof enabledRaw !== 'boolean') {
-    warnings.push('enabled ignored (invalid value); using default')
-  }
-
-  for (const [section, defaults] of Object.entries(sections)) {
-    const sectionOut = {}
-    const sectionRaw = source[section]
-    if (sectionRaw !== undefined && !isPlainObject(sectionRaw)) {
-      warnings.push(`${section} ignored (invalid section); using defaults`)
-    }
-    for (const [key, fallback] of Object.entries(defaults)) {
-      takeScalar(sectionOut, isPlainObject(sectionRaw) ? sectionRaw : {}, section, key, fallback, warnings)
-    }
-    config[section] = sectionOut
-  }
-
-  const privacyRaw = isPlainObject(source.privacy) ? source.privacy : {}
-  if (source.privacy !== undefined && !isPlainObject(source.privacy)) {
-    warnings.push('privacy ignored (invalid section); using defaults')
-  }
-  const privacy = {}
-  takeScalar(privacy, privacyRaw, 'privacy', 'redact', DEFAULTS.privacy.redact, warnings)
-  takeScalar(privacy, privacyRaw, 'privacy', 'redactTitles', DEFAULTS.privacy.redactTitles, warnings)
-  privacy.denyPathPatterns = takeStringArray(
-    privacyRaw.denyPathPatterns,
-    DEFAULTS.privacy.denyPathPatterns,
+  const boot = bootstrap(ctx, rawConfig).then(
+    (services) => {
+      if (state.disposed) {
+        services.dispose()
+        return
+      }
+      state.services = services
+      state.booted = true
+      if (typeof ctx.effect === 'function') {
+        ctx.effect(
+          () => () => {
+            state.disposed = true
+            try {
+              services.dispose()
+            } catch {
+              // Teardown must never throw.
+            }
+          },
+          'confluence:lifecycle',
+        )
+      }
+    },
+    (error) => {
+      state.disposed = true
+      logActivationFailure(ctx, error)
+    },
   )
-  privacy.privateSessions = takeStringArray(privacyRaw.privateSessions, DEFAULTS.privacy.privateSessions)
-  privacy.disabledWorkspaces = takeStringArray(
-    privacyRaw.disabledWorkspaces,
-    DEFAULTS.privacy.disabledWorkspaces,
-  )
-  privacy.redactPatterns = takeStringArray(privacyRaw.redactPatterns, DEFAULTS.privacy.redactPatterns)
-  config.privacy = privacy
 
-  return { config, warnings }
-}
-
-/** Where the store will live once M1 implements it (reported in the warning). */
-function storeLocationLabel(config) {
-  if (typeof config.store.dir === 'string' && config.store.dir !== '') return config.store.dir
-  return '$DSH_HOME/storages/confluence/v1 (default)'
+  return boot.then(() => undefined)
 }
 
 /**
- * Host plugin entry point.
+ * Test/embedding seam: same activation with injected service seams. Not used by
+ * the Loader; kept small so hermetic tests can drive the facade without a host.
  *
- * Design stage: validate config, log once, register nothing, return nothing.
- * Every future registration belongs inside `apply` and must be owned by
- * `ctx.effect`/`ctx.on` so plugin unload removes it (Cordis lifecycle).
- *
- * @param {object} ctx Cordis plugin context (only `logger` is used here)
- * @param {unknown} config Loader row config from cordis.patch.yml
- * @returns {void}
+ * @param {object} ctx Cordis-like context (`get`, `on`, `effect`)
+ * @param {object} [rawConfig]
+ * @param {object} [deps] extra dependencies merged into the bootstrap
+ * @returns {Promise<object>} services handle (has `dispose()`)
  */
-export function apply(ctx, config) {
-  const { config: resolved, warnings } = resolveConfig(config)
-  const stage = resolved.enabled ? 'no capabilities implemented' : 'disabled via config'
-  const details = [
-    `store: ${storeLocationLabel(resolved)}`,
-    `pulse: ${resolved.pulse.enabled ? 'planned' : 'off'}`,
-    `ledger: ${resolved.ledger.enabled ? 'planned' : 'off'}`,
-    `recall: ${resolved.recall.enabled ? 'planned' : 'off'}`,
-    `ui: ${resolved.ui.enabled ? 'planned (M3)' : 'off'}`,
-  ]
-  const configWarnings =
-    warnings.length === 0 ? '' : ` config warnings: ${warnings.join('; ')}.`
-  const message =
-    `[confluence] design-stage scaffold, ${stage}: Confluence / 汇流 stores nothing, ` +
-    `injects no pulse, and registers no tools or UI. Installation has no user-visible effect. ` +
-    `Implementation starts at milestone M1 (docs/plan/execution-plan.md). ` +
-    `Resolved: ${details.join('; ')}.${configWarnings}`
+export async function applyWithDeps(ctx, rawConfig, deps = {}) {
+  const services = await bootstrap(ctx, rawConfig, deps)
+  return services
+}
 
+/**
+ * @param {object} ctx
+ * @param {object} [rawConfig]
+ * @param {object} [injected]
+ * @returns {Promise<object>}
+ */
+async function bootstrap(ctx, rawConfig, injected = {}) {
+  const { config, warnings } = resolveConfig(rawConfig)
+  const logger = createLogger(true, createLogSink(config, injected))
+  for (const warning of warnings) logger.warn({ event: 'confluence.config.warning', warning })
+
+  const deps = {
+    fs: injected.fs ?? fsPromises,
+    fsSync: injected.fsSync ?? fsSync,
+    now: typeof injected.now === 'function' ? injected.now : () => Date.now(),
+    random: typeof injected.random === 'function' ? injected.random : Math.random,
+    pid: injected.pid ?? process.pid,
+    ...injected.deps,
+  }
+
+  const workspaceResolver =
+    injected.workspaceResolver ??
+    createWorkspaceResolver({
+      workingDirectory: safeGet(ctx, 'workingDirectory') ?? null,
+      fs: deps.fs,
+      platform: process.platform,
+    })
+
+  const store = injected.store ?? new JournalStore({ config, logger, deps })
+  if (typeof store.init === 'function') await store.init()
+
+  const redactor = injected.redactor ?? createRedactor(config, { logger })
+  const board = injected.board ?? new BoardService({ store, config, redactor, logger, deps })
+
+  const getService = (name) => safeGet(ctx, name)
+  const ledgerDeps = {
+    now: deps.now,
+    workspaceResolver,
+    canonicalizeDir: (raw) => canonicalizeDir(raw, { fs: deps.fs, platform: process.platform }),
+    redactor,
+    getService,
+  }
+  const ledger = injected.ledger ?? new SessionLedger({ store, config, logger, deps: ledgerDeps })
+  const presence = injected.presence ?? new Presence({ store, config, logger, deps: { now: deps.now } })
+  const watermark = injected.watermark ?? new WatermarkTracker({ config, logger, deps: { now: deps.now } })
+
+  const sessionQuery = getService('sessionQuery') ?? null
+  const sessionTitle = getService('sessionTitle') ?? null
+  const recall =
+    injected.recall ??
+    new RecallService({
+      config,
+      logger,
+      deps: {
+        sessionQuery,
+        redactor,
+        now: deps.now,
+        canonicalizeDir: (raw) => canonicalizeDir(raw, { fs: deps.fs, platform: process.platform }),
+      },
+    })
+
+  /** @type {Array<() => void>} */
+  const disposers = []
+  const disposeOnce = (() => {
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      for (const dispose of disposers.splice(0).reverse()) {
+        try {
+          dispose()
+        } catch {
+          // Teardown is best-effort.
+        }
+      }
+    }
+  })()
+
+  /** @type {ConfluenceFacade} */
+  const facade =
+    injected.facade ??
+    new ConfluenceFacade({
+      config,
+      logger,
+      workspaceResolver,
+      store,
+      board,
+      redactor,
+      presence,
+      watermark,
+      recall,
+      sessionQuery,
+      sessionTitle,
+      onBoardChanged: (wsKey) => {
+        try {
+          pulse.refresh(wsKey)
+        } catch {
+          // Best-effort refresh.
+        }
+      },
+    })
+
+  const pulse =
+    injected.pulse ??
+    new PulseService({
+      config,
+      logger,
+      deps: {
+        getWorkspace: (sessionId) => facade.cachedWorkspace(sessionId),
+        getView: (wsKey) => {
+          try {
+            return board.view(wsKey)
+          } catch {
+            return null
+          }
+        },
+        getPeers: (wsKey) => {
+          try {
+            return presence.live(wsKey)
+          } catch {
+            return []
+          }
+        },
+        getCursor: (sessionId) => {
+          const session = facade.sessionFor(sessionId)
+          return session === null ? null : watermark.get(session)
+        },
+        now: deps.now,
+      },
+    })
+
+  // ── host events: session tracking + workspace warming ───────────────────
+  const onAgentCreated = (payload) => {
+    try {
+      const agent = payload && payload.agent
+      const session = agent && agent.session
+      if (session) facade.trackSession(session)
+      if (agent) {
+        void facade
+          .ensureWorkspace(agent)
+          .then((ws) => {
+            pulse.refresh(ws.key)
+          })
+          .catch(() => {})
+      }
+    } catch {
+      // Event handlers must never throw into the host.
+    }
+  }
+  const onSessionEvent = (session, event) => {
+    try {
+      if (session) facade.trackSession(session)
+      if (event && event.type === 'turn/end' && session) {
+        const sessionId = session.id
+        const ws = sessionId === undefined ? null : facade.cachedWorkspace(sessionId)
+        if (ws !== null) pulse.refresh(ws.key)
+      }
+    } catch {
+      // Event handlers must never throw into the host.
+    }
+  }
+  const onSessionDisposed = (payload) => {
+    try {
+      const sessionId = payload && (payload.sessionId ?? (payload.session && payload.session.id))
+      if (typeof sessionId === 'string') facade.sessions.delete(sessionId)
+    } catch {
+      // Event handlers must never throw into the host.
+    }
+  }
+
+  const offAgentCreated = ctx.on('agent/created', onAgentCreated)
+  if (typeof offAgentCreated === 'function') disposers.push(offAgentCreated)
+  const offSessionEvent = ctx.on('session/event', onSessionEvent)
+  if (typeof offSessionEvent === 'function') disposers.push(offSessionEvent)
   try {
-    ctx?.logger?.warn?.(message)
+    const offDisposed = ctx.on('session/disposed', onSessionDisposed)
+    if (typeof offDisposed === 'function') disposers.push(offDisposed)
   } catch {
-    // Diagnostics are best-effort; a broken logger must not break activation.
+    // Optional event.
   }
-  // Design stage ends here. M1 will continue with:
-  //   store/journal -> workspace resolver -> board -> pulse -> tools.
+
+  // ── component attachment ────────────────────────────────────────────────
+  try {
+    await watermark.attach(ctx)
+  } catch (error) {
+    logger.warn({ event: 'confluence.watermark.attach-failed', message: String(error) })
+  }
+  try {
+    const offLedger = ledger.attach(ctx)
+    if (typeof offLedger === 'function') disposers.push(offLedger)
+  } catch (error) {
+    logger.warn({ event: 'confluence.ledger.attach-failed', message: String(error) })
+  }
+
+  const listLiveSessions = () => {
+    const agents = safeGet(ctx, 'agents')
+    const rows = []
+    if (!agents || typeof agents.list !== 'function') return rows
+    try {
+      for (const agent of agents.list() || []) {
+        const session = agent && agent.session
+        const sessionId = session && session.id
+        if (typeof sessionId !== 'string' || sessionId === '') continue
+        const ws = facade.cachedWorkspace(sessionId)
+        rows.push({
+          id: sessionId,
+          sessionId,
+          title: typeof agent.title === 'string' ? agent.title : '',
+          wsKey: ws === null ? undefined : ws.key,
+          status: typeof agent.status === 'string' ? agent.status : 'idle',
+        })
+      }
+    } catch {
+      // Presence degrades to "no peers".
+    }
+    return rows
+  }
+  try {
+    const offPresence = presence.attach(ctx, listLiveSessions)
+    if (typeof offPresence === 'function') disposers.push(offPresence)
+  } catch (error) {
+    logger.warn({ event: 'confluence.presence.attach-failed', message: String(error) })
+  }
+  try {
+    pulse.attach(ctx)
+  } catch (error) {
+    logger.warn({ event: 'confluence.pulse.attach-failed', message: String(error) })
+  }
+
+  // ── model-facing tools ──────────────────────────────────────────────────
+  let unregisterTools = null
+  try {
+    const definitions = createTools(facade, config)
+    unregisterTools = registerTools(ctx, definitions)
+    if (typeof unregisterTools === 'function') disposers.push(unregisterTools)
+    logger.info({ event: 'confluence.tools.registered', count: definitions.length })
+  } catch (error) {
+    logger.warn({ event: 'confluence.tools.register-failed', message: String(error) })
+  }
+
+  // ── read-only panel routes (optional web server) ────────────────────────
+  let unregisterUi = null
+  try {
+    unregisterUi = registerHostUi(ctx, { facade, workspaceResolver, config, logger })
+    if (typeof unregisterUi === 'function') disposers.push(unregisterUi)
+  } catch (error) {
+    logger.warn({ event: 'confluence.ui.register-failed', message: String(error) })
+  }
+
+  // ── warm currently live agents, then keep mirrors fresh ─────────────────
+  for (const agent of listAgents(ctx)) onAgentCreated({ agent })
+  for (const wsKey of facade.workspaceKeys()) pulse.refresh(wsKey)
+
+  const pollMs = Math.max(4000, Math.min(10000, Math.trunc(Number(config.store && config.store.pollMs) || 4000)))
+  const timer = setInterval(() => {
+    void (async () => {
+      for (const wsKey of facade.workspaceKeys()) {
+        try {
+          await board.refresh(wsKey)
+          pulse.refresh(wsKey)
+        } catch {
+          // Cross-window refresh is best-effort; the prompt stays byte-stable.
+        }
+      }
+      try {
+        if (presence && typeof presence.refreshPresence === 'function') await presence.refreshPresence()
+      } catch {
+        // Presence polling is best-effort.
+      }
+    })()
+  }, pollMs)
+  if (timer && typeof timer.unref === 'function') timer.unref()
+  disposers.push(() => clearInterval(timer))
+
+  // ── ordered teardown ────────────────────────────────────────────────────
+  disposers.push(() => {
+    try {
+      pulse.dispose()
+    } catch {
+      /* best-effort */
+    }
+  })
+  disposers.push(() => {
+    try {
+      presence.dispose()
+    } catch {
+      /* best-effort */
+    }
+  })
+  disposers.push(() => {
+    try {
+      ledger.dispose()
+    } catch {
+      /* best-effort */
+    }
+  })
+  disposers.push(() => {
+    void (async () => {
+      try {
+        await watermark.dispose()
+      } catch {
+        /* best-effort */
+      }
+      try {
+        if (typeof store.close === 'function') await store.close()
+      } catch {
+        /* best-effort */
+      }
+    })()
+  })
+
+  return {
+    version: VERSION,
+    config,
+    publicConfig: publicConfig(config),
+    warnings,
+    logger,
+    services: { store, board, ledger, presence, watermark, pulse, recall, facade, workspaceResolver },
+    dispose: disposeOnce,
+    /**
+     * Awaitable teardown for tests and embedders: same as `dispose()` plus the
+     * asynchronous store/projection close. Idempotent; never throws.
+     * @returns {Promise<void>}
+     */
+    async disposeAsync() {
+      disposeOnce()
+      try {
+        await watermark.dispose()
+      } catch {
+        /* best-effort */
+      }
+      try {
+        if (typeof store.close === 'function') await store.close()
+      } catch {
+        /* best-effort */
+      }
+    },
+  }
+}
+
+// ── small host helpers ────────────────────────────────────────────────────
+
+/** @param {object} ctx @param {string} name @returns {any} */
+function safeGet(ctx, name) {
+  try {
+    if (ctx && typeof ctx.get === 'function') return ctx.get(name)
+  } catch {
+    return undefined
+  }
   return undefined
 }
+
+/** @param {object} ctx @returns {object[]} */
+function listAgents(ctx) {
+  const agents = safeGet(ctx, 'agents')
+  if (!agents || typeof agents.list !== 'function') return []
+  try {
+    return [...(agents.list() || [])]
+  } catch {
+    return []
+  }
+}
+
+/** @param {object} config @param {object} injected @returns {object} logger sink */
+function createLogSink(config, injected) {
+  const debug = config && config.debug && typeof config.debug === 'object' ? config.debug : {}
+  const logFile = typeof debug.logFile === 'string' && debug.logFile !== '' ? debug.logFile : ''
+  const write = (level) => (record) => {
+    const line = JSON.stringify({ time: isoNow(Date.now()), level, plugin: 'confluence', ...record })
+    if (logFile !== '') {
+      try {
+        fsPromises.appendFile(logFile, `${line}\n`, 'utf8').catch(() => {})
+        return
+      } catch {
+        // Fall through to stderr.
+      }
+    }
+    if (level === 'warn' || level === 'error') {
+      try {
+        process.stderr.write(`[confluence] ${line}\n`)
+      } catch {
+        // Never throw from logging.
+      }
+    }
+  }
+  if (injected && injected.logSink) return injected.logSink
+  return { debug: write('debug'), info: write('info'), warn: write('warn'), error: write('error') }
+}
+
+/** @param {object} ctx @param {unknown} error */
+function logActivationFailure(ctx, error) {
+  try {
+    const message = error instanceof Error ? error.message : String(error)
+    const record = { event: 'confluence.activation-failed', message, code: error && error.code ? error.code : undefined }
+    if (ctx && typeof ctx.logger === 'object' && ctx.logger && typeof ctx.logger.error === 'function') {
+      ctx.logger.error(record)
+      return
+    }
+    process.stderr.write(`[confluence] ${JSON.stringify(record)}\n`)
+  } catch {
+    // Never throw from the failure path.
+  }
+}
+
+// Re-export the error class for embedding/tests (no side effects).
+export { ConfluenceError, makeWriterId }

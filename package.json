@@ -2,7 +2,7 @@
   "name": "dsh-confluence",
   "version": "0.1.0",
   "private": true,
-  "description": "Design-stage DeepSeek Harness bundle for workspace-scoped shared memory (Confluence / 汇流): a passive pulse, a durable shared board, and metadata-only ledger plus on-demand recall. No capability is implemented yet; this repository currently ships the complete design, packaging scaffold and contract tests.",
+  "description": "Fully-offline DeepSeek Harness plugin that shares workspace memory between sessions in the same project (Confluence / 汇流): a passive pulse, a durable shared board, and on-demand recall.",
   "author": "XiaoleC05",
   "repository": {
     "type": "git",
@@ -16,11 +16,14 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
+    "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
@@ -30,7 +33,7 @@
     "dsh": ">=0.2.2-rc.1"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test --test-force-exit \"test/*.test.js\"",
     "check": "node scripts/check.mjs"
   },
   "keywords": [
@@ -46,6 +49,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
     }
   }
 }

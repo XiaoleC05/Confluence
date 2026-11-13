@@ -1,6 +1,8 @@
 # ADR 0006 — solo-bench integration: vendored subtree + export-only contract
 
-- Status: **Proposed (future merge phase)** — binding on the later merge; nothing here is executed during the design phase
+- Status: **Proposed (future merge phase)** for the vendored-subtree merge and the Go consumer;
+  **the export producer is implemented in v0.1.0** (see "Implementation status" below). Nothing about
+  the merge is executed during the build phase.
 - Date: 2026-11-13
 - Context: [ADR 0001](0001-confluence-architecture.md) §6/§13/§14;
   [solo-bench integration design](../design/solo-bench-integration.md); [testing strategy](../design/testing.md) §11
@@ -28,7 +30,9 @@ and how the workbench reads Confluence memory without the live plugin or DSH?
    gains **no** repo-root license file.
 2. **The only data contract is the opt-in file export** written by the plugin to
    `<workspace>/.confluence/export/`, exactly as specified in
-   [`store-format.md`](../design/store-format.md) §14:
+   [`store-format.md`](../design/store-format.md) §14 — **implemented in v0.1.0** by
+   `lib/export.js` + `scripts/export-memories.mjs` with `test/export.test.js` (see
+   "Implementation status"):
    - `manifest.json` (`schema:"confluence.memories/v1"`, `formatVersion:1`): `producer{name,version,dsh}`,
      `workspace{wsKey,name}` (no absolute/home paths), `generatedAt` (only non-deterministic field),
      `recordCount`, `firstSeq`, `lastSeq`, `files[{name,bytes,sha256}]`,
@@ -46,6 +50,25 @@ and how the workbench reads Confluence memory without the live plugin or DSH?
    dependency, DB change or service row in phase 0.
 4. **`solo-bench` consumes the export, not the live journal or live IPC** (no pipes, sockets, loopback
    HTTP, `$DSH_HOME/storages/confluence`). Rationale below.
+
+## Implementation status — export producer (executed 2026-11-13)
+
+| Piece | Where | Status / evidence |
+|---|---|---|
+| Export library | `lib/export.js` | Implemented. `exportWorkspace()` reads merged journal records through `JournalStore` (read-only), folds with `board.foldRecords`, writes the pair outside the store, and never reads it back. |
+| CLI | `scripts/export-memories.mjs` | Implemented. `node scripts/export-memories.mjs --dsh-home <dir> --workspace <path> [--out <dir>] [--json] [--dry-run]`; exit 0 success / 1 runtime failure with `export-memories: <CODE>: …` / 2 usage; `--out` is workspace-relative only. |
+| Tests | `test/export.test.js` | **Executed:** `node --test --test-force-exit "test/export.test.js"` → 10/10 pass (EXP-01..10) covering mapping/order, live-only counts, tombstone stubs, manifest hash/bytes (V7 rule), redaction/absolute-path stripping, determinism, store read-only/dry-run, fail-closed errors, CLI paths, helpers. |
+| E2E proof | `.tmp/e2e/run-20261113-183207/dsh-home` E2E scratch store | **Executed:** CLI exported workspace `ws_35ca2d7650a1831a`: `recordCount: 1`, one live seq, `files[0]` 564 bytes / sha256 `39d0ffe9…4247`; `--dry-run` produced identical hashes and wrote nothing. |
+| UI / model tool surface | — | Not in v0.1.0: no panel "Export now" and no export tool; the CLI is the explicit user action (config default `export.enabled: false`). Panel export stays future. |
+| Go consumer, subtree merge, conformance fixtures | — | **Not started** (separate approved phase). `test/fixtures/export/` lands with the consumer. |
+
+Deviations recorded for reviewers: (a) the library accepts optional test seams (`now`, `fs`,
+`writerId`, `dryRun`) beyond the agreed signature — production callers pass only
+`{store, board?, config, redactor, workspaceKey, outDir, logger}`; (b) the CLI is a repository tool in
+`scripts/` (like `scripts/check.mjs`), not part of the published package's runtime `files`;
+(c) retention-hidden entries are excluded from the export and reported as `skippedRetention`, not as
+`limits.truncated` (retention is a documented filter, not a cap); (d) a redactor failure aborts with
+`EXPORT_FAILED` before any file is written (fail closed).
 
 ## Why the export and not the live journal
 
@@ -72,11 +95,13 @@ and how the workbench reads Confluence memory without the live plugin or DSH?
 
 - **Positive:** self-contained offline workbench repository; a small, testable Go consumer; clear
   ownership/privacy boundary; internal store evolution does not break the workbench; Crisp-style
-  layout/install/verification discipline reused.
+  layout/install/verification discipline reused. The producer side is already implemented and tested
+  (see "Implementation status"), so the later merge starts from a frozen, exercised contract.
 - **Negative:** vendored copy grows size/history; updates are manual and conflict if anyone edits the
   subtree (fixes go upstream); the export is a snapshot, not live sync; a format is tested twice
-  (fixtures mitigate).
-- **Neutral:** a separate approved phase is needed before the first consumer line; this ADR changes nothing now.
+  (fixtures mitigate; they land with the consumer phase).
+- **Neutral:** a separate approved phase is needed before the first consumer line; this ADR stays
+  Proposed for the merge and changes nothing in `solo-bench` now.
 
 ## Non-goals
 

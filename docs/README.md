@@ -5,10 +5,10 @@ plugin** that gives sessions in the same workspace a shared memory: a passive pu
 board, and on-demand recall. The binding architecture is
 [ADR 0001](adr/0001-confluence-architecture.md).
 
-**Status: design complete; implementation starts at M1.** Round-1 research, the round-2 decision,
-ADR-0001, the round-3 design documents, ADRs 0002–0006 and the execution plan are present in the
-repository. The **M0 spike specs** are present but **not executed** — results are TBD in
-`plan/m0-spikes.md` §10. Packaging, install and publishing guides are present.
+**Status: v0.1.0 implemented (Host plugin + read-only panel).** The offline unit and integration test
+suite passes and the packaging contract passes. Installation, live activation and panel rendering are
+**not executed**; the M0 spike specs are present but **not executed** (results TBD in
+`plan/m0-spikes.md` §10). Packaging, install and publishing guides are present.
 
 Verification honesty: documents state what was **executed** and what was not. The project has not been
 installed into a DSH profile, has not run in a live host, and has published nothing. Numbers in the
@@ -26,7 +26,7 @@ docs are design targets unless stated otherwise. Unverified claims are marked `H
 4. [Round 1 — research findings and candidate designs](discussion/round-1.md) — the evidence base and
    the two original options.
 5. Round-3 design documents below — the implementable detail (components, store format, tools, pulse,
-   UI, tests), then packaging/install/publishing.
+   UI, tests), then the implementation contract and live status in §6, then packaging/install/publishing.
 
 Read the two [research](research/dsh-internals.md) documents when you need the raw evidence: DSH
 internals for exact APIs/behaviour, prior art and external patterns for what to compose with and what
@@ -85,10 +85,12 @@ repository contract tests require every link on this page to resolve.
 Historical option proposals (superseded by ADR-0001, kept for the decision record):
 [Option A](design/options/option-a.md) and [Option B](design/options/option-b.md).
 
-## 6. Execution plan (round 3)
+## 6. Implementation plan and status
 
 | Document | One-line description | Status |
 |---|---|---|
+| [plan/implementation-interfaces.md](plan/implementation-interfaces.md) | **Binding** module contracts, exports, ownership and test conventions for the v0.1.0 build. | **Available** |
+| [plan/implementation-status.md](plan/implementation-status.md) | Live coordination record: milestone/WP state, files present, executed-vs-not-executed verification, blockers. | **Available** |
 | [plan/execution-plan.md](plan/execution-plan.md) | Milestone plan (M0–M4), owners, dependencies, acceptance gates and risk checkpoints. | **Available** |
 | [plan/m0-spikes.md](plan/m0-spikes.md) | M0 spike **specs** (method/protocol for S1–S7, spike→milestone map); **not executed** — results TBD in §10. | **Available** |
 
@@ -96,7 +98,7 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
 
 | Document | One-line description |
 |---|---|
-| [Install and verification guide (future / M3-verified)](install.md) | How the bundle will be installed and verified: Plugin Manager `install_bundle`, scratch-profile CLI path, offline guarantees, negative checks, rollback, and the not-executed list. |
+| [Install and verification guide (v0.1.0)](install.md) | How the bundle is installed and verified: Plugin Manager `install_bundle`, scratch-profile CLI path, offline guarantees, checklists, rollback, and the not-executed list. |
 | [Publishing and release process](publishing.md) | Versioning, offline pack inspection and checksums, release steps, channel state, and the "nothing was published" honesty note. |
 
 ## 8. Planning
@@ -109,16 +111,19 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
 
 | Area | Status |
 |---|---|
-| Round-1 research + round-2 decision + ADR-0001 | Executed and committed |
-| Packaging scaffold (manifest, patch, entry, locales, icon, examples) | Executed and committed |
-| Contract tests (`node --test "test/*.test.js"`, `node scripts/check.mjs`) | Executed offline; see the project README verification table |
-| `npm pack --dry-run` file-list inspection | Executed offline — 9 files, no unintended content; no tarball written |
-| Round-3 design documents / ADRs 0002–0006 / execution plan | Available (authored in round 3) |
-| M0 spike specs | Present; **not executed** — results TBD in `plan/m0-spikes.md` §10 |
-| Bundle installed into a DSH profile; activation observed | **Not executed** |
-| Pulse/board/tools/UI behaviour | **Not implemented; not executed** |
+| Round-1 research + round-2 decision + ADRs 0001–0006 | Available (design package; ADR-0006 merge remains proposed) |
+| Host plugin (15 `lib/*.js` modules + `index.js`) and Web panel (`client.js`) | **Implemented** |
+| Offline test suite (`node --test --test-force-exit "test/*.test.js"`) | **Executed — 256/256 pass** |
+| Packaging contract (`node scripts/check.mjs`) | **Executed — 12/12 checks pass** |
+| `npm pack --dry-run` file-list inspection | **Executed** — 24 files, no dev-tree content; no tarball written |
+| M0 spikes | **Executed** — 14 pass / 0 fail / 1 blocked (`scripts/m0-smoke.mjs`); S1/S2/S4/S7 closed, S3/S5 tracked open; results in `plan/m0-spikes.md` §10 |
+| Offline scratch-profile E2E (`scripts/e2e-dsh.ps1`) | **Executed — 8/8 checks** (two real sessions, cross-session pulse) |
+| Bundle installed into a DSH profile; activation observed | **Executed on the real `desktop` profile** via Plugin Manager `install_bundle`; six tools + pulse live; `confluence_board` executed |
+| Panel rendering / live GUI verification | **Not executed** — client bundle loads on the next page refresh; routes are auth-guarded |
+| PTC preset tool reachability, multi-window live freshness, soak/compaction | **Not executed** |
+| Export producer + `solo-bench` Go consumer | **Implemented and tested** (`scripts/export-memories.mjs`, `solo-bench/internal/confluenceexport`) |
 | Building/hashing the tarball; publishing/release | **Not executed — nothing was published** |
-| Merge into `solo-bench` | **Not executed** |
+| Merge into `solo-bench` | **Consumer + vendored copy present**; merge provenance documented in `solo-bench/integrations/dsh-plugin-confluence/INTEGRATION.md` |
 
 ## 10. Documentation conventions
 
@@ -126,6 +131,6 @@ Historical option proposals (superseded by ADR-0001, kept for the decision recor
   `cordis_inspect_query`, or a URL. Unverified claims are prefixed `HYPOTHESIS:`.
 - Links are relative and must resolve in the repository; a document is added to this index when it exists.
 - Numbers are design targets unless explicitly recorded as measured results.
-- The project never claims a capability it has not implemented; the design-stage scaffold in
-  `index.js` logs exactly one warning and does nothing else.
+- The project never claims a capability it has not implemented; the v0.1.0 implementation is covered by
+  the offline test suite, while install/activation/panel checks remain explicitly pending.
 

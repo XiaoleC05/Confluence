@@ -2,86 +2,52 @@
 
 > **Your sessions remember together.** / **同一工作区的会话，共享同一份记忆。**
 
-**Status: design complete — implementation starts at milestone M1.** This repository currently
-contains the complete design, the packaging scaffold for the DSH bundle, and dependency-free contract
-tests. The plugin entry point is deliberately empty: **installing this bundle has no user-visible
-effect yet.** There is no board, no pulse, no recall, no UI and no data written anywhere.
+**Status: v0.1.0 implemented — Host plugin + read-only Web panel; the offline unit and integration
+test suite passes. The bundle has NOT yet been installed into a DSH profile and its panel rendering has
+NOT been visually verified.** This README separates what was executed from what is still pending.
 
-Confluence (Chinese name **汇流**, "where streams meet") is a fully-offline plugin for
-**DeepSeek Harness (DSH)** that makes information sharing between sessions of the same workspace
-automatic instead of a manual "please write it to a doc" instruction. It targets DSH Desktop
-**0.2.2-rc.1**, profile `desktop`, and later merges into the `solo-bench` offline workbench.
+Confluence (Chinese name **汇流**, "where streams meet") is a **fully offline** DeepSeek Harness (DSH)
+plugin that lets sessions in the same workspace share what they learned: a passive **pulse** in the
+prompt, a durable **board** of shared notes, and an explicit, bounded **recall** over earlier sessions.
+No server, no network calls, no extra port, no child processes and no model calls at runtime.
 
-This README is honest about what exists. Nothing here is a benchmark, a screenshot, or a demo; the
-project has not been installed into a profile yet.
+- Target host: DSH Desktop **0.2.2-rc.1** (declared minimum `>=0.2.2-rc.1`), profile `desktop`.
+- Package: `dsh-confluence` **v0.1.0**, `private: true`, MIT, no runtime dependencies.
+- Repository: [https://github.com/XiaoleC05/Confluence](https://github.com/XiaoleC05/Confluence)
 
 ---
 
 ## The problem
 
 DSH sessions are isolated language contexts. Two sessions started in the same directory do not know
-that they are working on the same workspace:
+that they share a workspace, so the same investigation is repeated and decisions are lost between
+windows. Today the only workarounds are manual: `@`-mention another session (a user-triggered, bounded
+snapshot), enable the experimental session-search tools (off by default and model-triggered), or ask an
+agent to write a file the other agent reads.
 
-- session A root-causes a Windows `EPERM` retry bug; session B re-investigates it from scratch;
-- session A decides "pin every dependency to the 0.2.x line"; session B chooses 0.3.x;
-- session A is halfway through a schema migration; session B starts another migration over it;
-- a user copies a paragraph from one chat window to another all day long.
-
-Today the only workarounds are manual:
-
-| Workaround | Where it falls short |
-|---|---|
-| Ask the agent to write a file, then ask the other agent to read it | You are the message bus; the file is not durable shared memory |
-| `@`-mention another session (`@deepseek-ai/dsh-session-reference`) | User-triggered, per-message, a bounded immutable snapshot; it does not tell the model what is new or open |
-| Enable the experimental `session_*` search tools | Shipped **off by default and hidden**; full-text search, model-triggered, no awareness |
-| A dashboard/insight plugin (e.g. `dsh-context`) | Read-only insight for a human; it does not share anything between sessions |
-
-The missing layer is **ambient workspace memory**: a session should not have to be told that a peer
-learned something. It should just know what the workspace shared, what is open, and what recently
-happened — locally, offline and bounded.
+Confluence makes workspace memory ambient instead: every session in the same project automatically sees
+what peers shared, what is open, and what recently happened — locally, offline and bounded.
 
 ---
 
-## What Confluence will do (v1)
+## What v0.1.0 implements
 
-The v1 architecture is a three-pillar hybrid, decided in
-[ADR 0001](docs/adr/0001-confluence-architecture.md) §2:
+| Pillar | Implemented in v0.1.0 |
+|---|---|
+| **Pulse** — passive awareness | One global `confluence:pulse` `ctx.systemPrompt.context()` contribution: a byte-stable, bounded digest of unread headlines, open questions/handoffs, live peers and the workspace name. The agent loop commits a new runtime-context snapshot only when the text changes, so an unchanged pulse costs no new tokens. Implemented by `lib/pulse.js` with log-derived watermarks (`lib/watermark.js`). |
+| **Board** — shared memory | Append-only, workspace-scoped JSONL journal (one writer shard per process) with typed notes (`finding`, `decision`, `gotcha`, `question`, `handoff`, `warning`), threads, resolution and tombstones. Implemented by `lib/store.js` + `lib/board.js` + `lib/facade.js`. |
+| **Ledger + recall** | Metadata-only live session ledger and presence heartbeats (no prompts/tool text), plus explicit literal recall over earlier same-workspace session logs through `ctx.sessionQuery` exact reads. Implemented by `lib/ledger.js`, `lib/presence.js`, `lib/recall.js`. |
+| **Six model tools** | `confluence_board`, `confluence_post`, `confluence_read`, `confluence_search`, `confluence_reply`, `confluence_recall` (`lib/tools.js`). |
+| **Read-only Web panel** | Left-rail entry + keyed main page (`client.js`) with board timeline, search/filters, entry detail, open items, mark-read and opt-out controls. Data comes from four read-only same-origin routes on the existing DSH web server (`lib/hostui.js`) — the documented route fallback; no `host.call`, no iframe, no push channel. |
 
-### 1. Pulse — passive awareness
-
-One global `ctx.systemPrompt.context()` contribution renders a **byte-stable, bounded digest** on
-every agent step: up to three new board headlines, open questions and handoffs, live peer sessions,
-and the workspace name. When a new note changes the text, the agent loop commits one new
-runtime-context snapshot; when nothing changed, the pulse costs **zero** new tokens and emits no new
-message. No wake-ups, no timers, no polling of agents.
-
-### 2. Board — explicit shared memory
-
-A durable, append-only, workspace-scoped board of short typed notes published by agents (or the
-user): `finding`, `decision`, `gotcha`, `question`, `handoff`, `warning`. Notes can be threaded with
-`reply_to`; questions and handoffs resolve. Nothing is edited in place — corrections are new notes or
-resolutions. Six model-facing tools (`confluence_board`, `confluence_post`, `confluence_read`,
-`confluence_search`, `confluence_reply`, `confluence_recall`) are the collaboration verbs.
-
-### 3. Ledger + recall — on-demand history
-
-A **metadata-only** session ledger (title, status, turn count, last activity, up to 8
-workspace-relative paths observed in tool calls) keeps awareness of live peers. `confluence_recall`
-searches prior same-workspace session logs **only when the model calls it**, through
-`ctx.sessionQuery` exact reads: literal matches, capped, timed, read-only. Recall never runs inside
-the prompt provider and never auto-injects.
-
-The user-visible promise: **"Your sessions remember together."** / **"同一工作区的会话，共享同一份记忆。"**
-
-The docs describe v1 accurately as *awareness plus on-demand literal search* — not as automatic
-retroactive transcript indexing (that is a possible v2 step, gated on an evaluation; see ADR §11).
+The user-visible promise: **"Your sessions remember together."**
 
 ---
 
 ## How it works (architecture)
 
 ```text
-┌───────────────────────────── DSH Desktop (one host per app instance) ─────────────────────────────┐
+┌───────────────────────────── DSH Desktop (one Host per app instance) ─────────────────────────────┐
 │                                                                                                    │
 │   Session A — workspace W                       Session B — workspace W                            │
 │   ┌────────────────────────────┐                ┌────────────────────────────┐                     │
@@ -92,63 +58,65 @@ retroactive transcript indexing (that is a possible v2 step, gated on an evaluat
 │   └─────────────┬──────────────┘                └─────────────┬──────────────┘                     │
 │                 │                                             │                                   │
 │                 ▼                                             ▼                                   │
-│   ┌──────────────────────── Confluence host plugin (plain ESM, Node builtins) ──────────────────┐  │
-│   │ WorkspaceResolver │ BoardService │ SessionLedger │ PulseProvider │ Watermark │ RecallService│  │
+│   ┌──────────────── Confluence Host plugin (plain ESM, Node builtins only) ─────────────────────┐  │
+│   │ index.js (facade wiring) → lib/: config · workspace · redact · store · board · ledger      │  │
+│   │ presence · watermark · pulse · recall · tools · hostui · facade · util                     │  │
 │   └──────────────────────────────────────┬──────────────────────────────────────────────────────┘  │
-│                                          │ append-only JSONL shards, presence heartbeats          │
+│                                          │ append-only JSONL shards + presence heartbeats          │
 │                 $DSH_HOME/storages/confluence/v1/workspaces/<wsKey>/                              │
 │                 ├─ journal.<writerId>.v1.jsonl     ├─ presence/<writerId>.json                     │
 │                 └─ MANIFEST.v1.json (M4)           └─ snapshot.<gen>.v1.jsonl (M4)                │
 │                                                                                                    │
-│   optional M3: read-only panel via sidebar.panellist + keyed main (no port, no network)           │
+│   Web panel (client.js): read-only same-origin GET on the existing web server; no new port          │
 └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Key boundaries (full detail in the [design docs](docs/README.md)):
+Key boundaries:
 
 - **Workspace = consent boundary.** Key = canonicalized session `header.cwd` (`fs.realpath`, Windows
-  case-folded), frozen per session. Nothing crosses workspaces. A session without a resolvable
-  workspace gets no pulse and no Confluence tools.
-- **The store is profile-local, not workspace pollution.** Append-only per-writer JSONL shards under
-  `$DSH_HOME/storages/confluence/v1/`; readers merge shards, tolerate torn trailing lines, and poll
-  every 3–5 s as the freshness contract (`fs.watch` is only an optimization).
+  case-folded), frozen per session. Nothing crosses workspaces; recall only reads sessions whose
+  canonical `cwd` matches the caller's workspace.
+- **The store is profile-local.** Append-only per-writer shards under
+  `$DSH_HOME/storages/confluence/v1/`; readers merge shards, tolerate torn trailing lines, and poll as
+  the freshness contract (`fs.watch` is only an optimization).
 - **The session log stays the source of truth.** Watermarks (`digestSeq`, `boardReadSeq`) are derived
-  from committed session events through a `sessionProjections` unit, so resume/replay/fork inherit
-  them without watermark files; plugin state is a derived cache.
+  from committed session events through a `sessionProjections` unit; plugin state is a derived cache.
 - **Shared content is untrusted data.** Fixed warning, escaped framing (`<`, `&`, U+2028/2029), no
   instruction-following, bounded sizes, best-effort secret redaction, metadata-only ledger.
+- **Offline by construction.** No `fetch` in the Host half, no network modules, no sockets, no child
+  processes; the panel's only request is a relative same-origin GET on the host's existing web server.
 
 ---
 
-## What v1 will not do
-
-Stated here so nobody is surprised later:
+## What v0.1.0 does not do
 
 - no continuous transcript indexing, no LLM extraction, no embeddings/vector search;
-- no server, network call, additional listening port, external database, child process or model
-  invocation;
+- no server, network call, additional listening port, external database, child process or model call;
 - no cross-workspace reading or sharing;
 - no remote/LAN collaboration, no Liveshare, no git automation;
-- no board editing or deletion UI, no accounts or permissions;
+- no board editing/deletion UI in v0.1.0 (tombstones are M4); no composer, no custom tool cards, no
+  per-session unread badge (deferred to v0.1.1);
 - not a replacement for `@`-mention snapshots or raw session search — it composes alongside them.
 
 ---
 
-## Design-stage reality (what is in this repository today)
+## Implementation reality (what is in this repository today)
 
-| Claim | Reality today |
+| Claim | Reality |
 |---|---|
-| Plugin bundle manifest and patch | **Present** — `package.json`, `cordis.patch.yml` |
-| Host entry point | **Present but empty by design** — `index.js` resolves config, logs one warning, registers nothing |
-| Locale metadata and icon | **Present** — `locale/en.json`, `locale/zh.json`, `icon.svg` |
-| Contract tests | **Present and offline** — `node --test "test/*.test.js"` |
-| Design documentation | **Present** — research, rounds 1–2, ADR-0001–0006 and the complete design set |
-| Pulse / board / ledger / recall / tools | **Not implemented** — M1–M2 |
-| Panel / client half | **Not implemented** — M3 |
-| Installed and activated in a DSH profile | **No** — not executed in this phase |
+| Host plugin (15 `lib/*.js` modules + `index.js` wiring) | **Implemented** |
+| Web panel (`client.js`, Dynamic ModuleLoader id `dsh-confluence`) | **Implemented, not visually verified** |
+| Six model tools, pulse, board, ledger/presence, recall, store | **Implemented**; unit tests cover each module |
+| Offline unit + integration test suite | **Passes offline** — `node --test --test-force-exit "test/*.test.js"` |
+| Packaging contract (manifest/patch/locales/icon/entry) | **Passes** — `node scripts/check.mjs` |
+| Installed into a scratch profile | **Not executed** (procedure in [docs/install.md](docs/install.md)) |
+| Installed into the real desktop profile | **Not executed** (Lead-owned) |
+| Panel rendering in a live GUI | **Not executed** (no browser control in this round) |
+| M0 spikes / E2E harness run | **Not executed** (specs and scaffolding only) |
+| npm pack / publish | **Pack dry-run executed**; no tarball, release or publication |
 
-The scaffold logs exactly one activation warning so an installed-but-empty bundle can never be
-mistaken for a working one.
+The repository does **not** claim the plugin is installed, activated or visually verified. Those checks
+are listed as pending below and in [docs/install.md](docs/install.md).
 
 ---
 
@@ -156,23 +124,22 @@ mistaken for a working one.
 
 ```text
 D:\05_Code\Confluence\
-  README.md                  this file (English)
-  README.zh-CN.md            Chinese README
-  LICENSE                    MIT
-  package.json               bundle manifest, name dsh-confluence, private v0.1.0
-  cordis.patch.yml           inserts the single `confluence` row + full default config
-  index.js                   host entry (design-stage scaffold only)
-  locale/en.json, zh.json    display metadata + future panel strings
+  index.js                   Host entry: wires the 15 lib modules onto the Cordis context
+  client.js                  Web panel: plain Dynamic ModuleLoader module (id 'dsh-confluence')
+  lib/                       Host modules (plain ESM, Node builtins only):
+    util.js config.js workspace.js redact.js store.js board.js watermark.js pulse.js
+    ledger.js presence.js recall.js tools.js hostui.js facade.js
+  package.json               bundle manifest: dsh-confluence v0.1.0, private, MIT, no dependencies
+  cordis.patch.yml           inserts the single `confluence` row with the full default config
+  locale/en.json, zh.json    display metadata + 85 panel strings (en/zh aligned)
   icon.svg                   original icon: three streams merging into one channel
   examples/profile-patch.yml commented user override examples (privacy/low-noise/debug)
-  scripts/check.mjs          standalone contract check
-  test/contract.test.js      dependency-free node:test contract tests
-  docs/                      design, research, decisions, plans, install/publishing guides
+  scripts/check.mjs          standalone packaging check (dependency-free)
+  test/                      unit tests per module, integration test, e2e scaffolding, fixtures
+  docs/                      design, research, decisions, plans, status, install/publishing guides
 ```
 
-There is no `lib/`, no `client.js` and no build step yet: the v1 host is planned as plain ESM
-JavaScript with Node builtins only, and the client half arrives in M3. The planned M1 layout adds
-`lib/` for the host implementation; nothing outside the files listed above ships today.
+There is no build step: the Host half is plain ESM and the panel is a plain browser module.
 
 ---
 
@@ -182,115 +149,116 @@ Start with the [documentation index](docs/README.md) for the full map and readin
 
 **Decisions and context**
 
-- [ADR 0001 — Confluence / 汇流 architecture](docs/adr/0001-confluence-architecture.md) — binding v1
-  architecture, configuration, milestones, rejected alternatives.
-- [Round 1 — research findings and candidate designs](docs/discussion/round-1.md)
-- [Round 2 — cross-critique and architecture decision](docs/discussion/round-2.md)
-- [Position A](docs/discussion/position-a.md) · [Position B](docs/discussion/position-b.md)
-- [Team brief](docs/planning/team-brief.md)
+- [ADR 0001 — Confluence / 汇流 architecture](docs/adr/0001-confluence-architecture.md)
+- [ADR 0002 — store format and concurrency](docs/adr/0002-store-format-and-concurrency.md) ·
+  [ADR 0003 — pulse and watermarks](docs/adr/0003-pulse-and-watermarks.md) ·
+  [ADR 0004 — privacy and consent](docs/adr/0004-privacy-and-consent.md) ·
+  [ADR 0005 — UI transport](docs/adr/0005-ui-transport.md) ·
+  [ADR 0006 — solo-bench integration](docs/adr/0006-solo-bench-integration.md) (proposed)
+- [Round 1](docs/discussion/round-1.md) · [Round 2](docs/discussion/round-2.md) ·
+  [Position A](docs/discussion/position-a.md) · [Position B](docs/discussion/position-b.md)
 
 **Research**
 
-- [DSH internals (0.2.2-rc.1)](docs/research/dsh-internals.md) — verified APIs, events, store
-  behaviour, concurrency hazards.
-- [Prior art in the DSH ecosystem](docs/research/prior-art.md) — what already exists, what to compose
-  with, what not to duplicate.
-- [External patterns](docs/research/external-patterns.md) — offline-safe pattern survey and matrix.
+- [DSH internals](docs/research/dsh-internals.md) · [Prior art](docs/research/prior-art.md) ·
+  [External patterns](docs/research/external-patterns.md)
 
-**Round-3 design documents**
+**Implementation**
 
-- [architecture](docs/design/architecture.md) — components, boundaries, lifecycle, ownership.
-- [data model](docs/design/data-model.md) — board/ledger record model and invariants.
-- [store format](docs/design/store-format.md) — journal format, shards, merge-on-read, compaction, export.
-- [tool API](docs/design/tool-api.md) — the six tool schemas and result rendering.
-- [pulse](docs/design/pulse.md) — digest template, budget split, escaping, watermark mechanics.
-- [ledger + recall](docs/design/ledger-recall.md) — metadata ledger and on-demand recall.
-- [panel design](docs/design/ui.md) — read-only panel, slots, locale, data channel.
-- [configuration](docs/design/config.md) — every configuration field and default.
-- [security & privacy](docs/design/security-privacy.md) — trust model, redaction, opt-outs, no-egress guarantees.
-- [test plan](docs/design/testing.md) — acceptance criteria and verification plan.
-- [solo-bench integration](docs/design/solo-bench-integration.md) — export contract and merge path.
-- [execution plan](docs/plan/execution-plan.md) — milestone plan and ownership.
-- [M0 spikes](docs/plan/m0-spikes.md) — M0 spike specs; not executed (results TBD).
-- ADR [0002 — store](docs/adr/0002-store-format-and-concurrency.md),
-  [0003 — pulse/watermarks](docs/adr/0003-pulse-and-watermarks.md),
-  [0004 — privacy](docs/adr/0004-privacy-and-consent.md),
-  [0005 — UI transport](docs/adr/0005-ui-transport.md), [0006 — solo-bench](docs/adr/0006-solo-bench-integration.md).
+- [Implementation interfaces (binding)](docs/plan/implementation-interfaces.md) — module contracts,
+  exports, ownership, test conventions.
+- [Implementation status (live)](docs/plan/implementation-status.md) — milestone/WP state,
+  executed-vs-not-executed verification, blockers.
+- [Execution plan](docs/plan/execution-plan.md) · [M0 spikes](docs/plan/m0-spikes.md) (specs; results TBD)
+- Design documents: [architecture](docs/design/architecture.md) ·
+  [data model](docs/design/data-model.md) · [store format](docs/design/store-format.md) ·
+  [tool API](docs/design/tool-api.md) · [pulse](docs/design/pulse.md) ·
+  [ledger + recall](docs/design/ledger-recall.md) · [panel](docs/design/ui.md) ·
+  [config](docs/design/config.md) · [security & privacy](docs/design/security-privacy.md) ·
+  [testing](docs/design/testing.md) · [solo-bench integration](docs/design/solo-bench-integration.md)
+- Tests: `test/*.test.js` (module + packaging) and `test/integration.test.js` (host wiring, tools,
+  pulse, store, panel routes).
 
 **Packaging and operations**
 
-- [Install and verification guide (future / M3-verified)](docs/install.md)
+- [Install and verification guide](docs/install.md)
 - [Publishing and release process](docs/publishing.md)
 
 ---
 
 ## Offline and privacy guarantees
 
-Confluence is designed to run with **no network at all**:
-
-- no `fetch`, no outbound socket, no child process, no model call in the plugin runtime;
-- no additional listening port and no server; installation is a local package operation;
-- no external database — only profile-local files under `$DSH_HOME/storages/confluence/v1/`;
+- no `fetch`, outbound socket, network module, child process or model call in the Host half;
+- no additional listening port and no server; the panel uses the existing DSH web server via relative
+  same-origin GETs only;
+- no external database — profile-local files under `$DSH_HOME/storages/confluence/v1/`;
 - no telemetry, no crash reporting, no update check.
 
-Privacy model (ADR §11):
+Privacy model:
 
 - **Workspace is the consent boundary.** Default-on sharing of board notes and metadata *within* one
   workspace; nothing is shared across workspaces.
-- **Stored vs read on demand is stated plainly.** The store holds board notes, titles, session
-  metadata, workspace-relative paths and counts. Prior session logs are read *only* when the model
-  explicitly calls `confluence_recall`, and only bounded excerpts are returned.
-- **Metadata-first defaults.** No prompts, assistant text, tool outputs or command lines are stored;
-  file hints are excluded from the pulse by default (`ledger.fileHintsInPulse: false`).
+- **Metadata-first.** The ledger stores titles, session ids, timestamps, turn counts, status and up to
+  eight workspace-relative paths; no prompts, assistant text, tool outputs or command lines. Prior
+  session logs are read *only* when an agent explicitly calls `confluence_recall`, and only bounded
+  excerpts are returned.
 - **Best-effort redaction** for API keys, tokens, private keys and password-like values, with
-  configurable deny-path patterns and per-session / per-workspace opt-outs.
-- **Shared notes are untrusted data**, not instructions — the pulse and board results carry a fixed
-  warning, escape framing characters, and can never trigger a tool call by themselves.
+  configurable deny-path and custom patterns plus per-session / per-workspace opt-outs.
+- **Shared notes are untrusted data.** The pulse and tool results carry a fixed warning and escaped
+  framing; shared content can never trigger a tool call by itself.
 
-These are design commitments; the no-egress and field-allow-list tests arrive with the implementation
-(M1–M4). The current scaffold itself contains no network or child-process code (checked by
-`test/contract.test.js`).
+These guarantees are enforced by static contract checks and the privacy unit tests (see the
+verification table below); they are not a claim that a live host was audited.
 
 ---
 
-## Install (future / M3-verified)
+## Install status
 
-> **Not executed in this phase. Do not expect any behaviour if you install this bundle today.**
-> No profile was modified while producing this repository. The documented verification target is
-> **M3**, and the full procedure lives in [docs/install.md](docs/install.md).
+> **Not installed yet.** No DSH profile was modified during this round. v0.1.0 is implemented and its
+> offline tests pass, but installation and activation are still pending.
 
-Two documented paths (shipped DSH guidance, copied from the Crisp integration precedent):
+The procedure is documented in [docs/install.md](docs/install.md):
 
-1. **Plugin Manager `install_bundle`** — install the bundle from the absolute repository path; the
-   manager performs package installation and bundle selection.
-2. **CLI into a scratch profile** — `dsh plugin --profile <scratch-name> add <absolute path>`, then
-   `dsh --profile <scratch-name> --dump-config` to confirm the `confluence` row composes, before any
-   real-profile install.
+1. **Scratch profile (first):** `dsh plugin --profile <scratch> add <absolute path>`, then
+   `--dump-config` to confirm the `confluence` row composes — **not executed**.
+2. **Real desktop profile:** Plugin Manager `install_bundle` from the absolute repository path —
+   **not executed / Lead-owned**.
 
-Expected design-stage activation behaviour: exactly **one warning** in the host log, stating that the
-plugin is a design-stage scaffold with no capabilities. No tools, no prompt text, no UI, no files.
+What installation verification must still prove: bundle row composes with the full default config, the
+six tools appear, the pulse renders bounded and byte-stable, the store files appear under
+`$DSH_HOME/storages/confluence/v1/`, the panel opens and is read-only, and no network/port/child
+process appears.
 
 Rollback: remove the bundle from the profile (`dsh plugin --profile <name> remove dsh-confluence`) or
-remove the row; a locally linked checkout leaves no state behind.
+delete the scratch `DSH_HOME` directory; plugin data can be removed separately.
 
 ---
 
 ## Development
 
-Requirements: **Node.js ≥ 22.19.0** and, for real activation later, **DSH ≥ 0.2.2-rc.1**. There are
-no dependencies to install and no build step.
+Requirements: **Node.js ≥ 22.19.0**; DSH Desktop **0.2.2-rc.1** for real activation later. No
+dependencies and no build step.
 
 ```powershell
 # from the repository root
-node --test "test/*.test.js"     # contract tests (offline, no deps)
-node scripts/check.mjs          # same checks as a standalone script with a summary
+node --test --test-force-exit "test/*.test.js"   # all offline tests (unit + integration + packaging)
+node scripts/check.mjs                            # standalone packaging check (dependency-free)
+npm pack --dry-run --json                         # inspect the shipped file list (offline)
 ```
 
-What the current tests cover: bundle manifest shape, patch row and default config, locale metadata and
-en/zh key alignment, icon validity and self-containment, host-entry import/apply contract (one warning,
-no registrations, malformed-config tolerance), no network/child-process/DSH imports in the host entry,
-README honesty markers and line budgets, docs-index link resolution, and the install/publishing guide
-sections. They intentionally test **packaging**, not unimplemented behaviour.
+`npm pack --dry-run` currently reports **24 files**: `package.json`, both READMEs, `LICENSE`, `index.js`,
+`client.js`, the 15 `lib/*.js` modules, `cordis.patch.yml`, both locale files and `icon.svg`. No
+`test/`, `docs/`, `examples/` or `scripts/` content ships.
+
+### Development, verification and release helpers
+
+| Script | Purpose |
+|---|---|
+| `node scripts/check.mjs` | Dependency-free packaging/contract checker (12 checks). |
+| `node scripts/m0-smoke.mjs` | M0 evidence suite: ULID, redaction corpus, pulse caps, journal append/torn-tail/two-writer, native lease, offline scan. |
+| `pwsh -File scripts/e2e-dsh.ps1` | Offline scratch-profile E2E: fresh `DSH_HOME` + headless profile + local Messages-API mock, two real sessions in one workspace, cross-session pulse assertions. |
+| `node scripts/export-memories.mjs --dsh-home <dir> --workspace <path>` | Explicit opt-in export producer: writes deterministic `memories.v1.jsonl` + `manifest.json` under `<workspace>/.confluence/export/`. |
+| `node --test --test-force-exit "test/*.test.js"` | All offline tests (unit, integration, packaging contract). |
 
 ---
 
@@ -298,45 +266,40 @@ sections. They intentionally test **packaging**, not unimplemented behaviour.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M0 — spikes** | Verify runtime-context dedupe, projection marker fold, PTC tool presentation, Windows journal append/torn lines, multi-window topology, host data channel, optional atomic-write import. | Planned (1 d) |
-| **M1 — core** | Journal store, workspace resolver, board records, `confluence_board`/`post`/`read`, pulse + welcome digest, projection watermarks, unit tests. | Planned (4 d) |
-| **M2 — collaboration** | Live ledger + presence, `reply`/`search`/`recall`, redaction/caps, private/opt-out, scratch-profile offline E2E. | Planned (3.5 d) |
-| **M3 — panel** | Read-only UI, locale, transport decision, mark-read/opt-out, no-egress test; **install verification**. | Planned (2.5 d) |
-| **M4 — hardening** | Compaction/export + manifest, docs/publishing verification, soak/concurrency tests, solo-bench integration doc. Badge, custom cards and composer UI are deferred to **v0.1.1** (signed off). | Planned (2 d) |
-
-Total v1 scope ≈ **13 engineer-days** (±30 %), per [ADR §14](docs/adr/0001-confluence-architecture.md).
-v2 (optional): deterministic lite-capture signals gated on a precision/recall evaluation — not v1.
+| **M0 — spikes** | Runtime-context dedupe, projection marker fold, PTC presentation, Windows journal, multi-window topology, host channel, atomic-write import | Specs present; **executed** for S1/S2/S4/S7 (`scripts/m0-smoke.mjs`, 14 pass / 1 blocked) and the route-fallback host channel (S6); PTC dispatch shape (S3) and multi-window topology (S5) remain **open** |
+| **M1 — core** | Store, workspace resolver, board, board tools, pulse + welcome digest, projection watermarks | **Implemented and exercised** in v0.1.0 (unit + offline E2E) |
+| **M2 — collaboration** | Ledger/presence, reply/search/recall, redaction/caps, private opt-outs, scratch-profile offline E2E | **Implemented**; scratch-profile offline E2E **executed** (8/8 harness checks) |
+| **M3 — panel** | Read-only UI, locale, transport, mark-read/opt-out, no-egress test, install verification | **Implemented**; install + activation **executed** on the real desktop profile; panel rendering/visual check **not executed** (needs a page refresh) |
+| **M4 — hardening** | Compaction/export + manifest, release verification, soak/concurrency tests, solo-bench integration | Export producer + solo-bench Go consumer **implemented and tested**; compaction/soak and release publishing **not executed** |
+| **v0.1.1 (later)** | Header badge, custom tool cards, composer/reply UI | Deferred (signed off) |
 
 ---
 
 ## Verification status
 
-Executed during this design phase:
+Executed on this tree (2026-11-13, Windows 11, Node 22.19.0, DSH 0.2.2-rc.1):
 
 | Check | Result |
 |---|---|
-| Design documents written (research, rounds 1–2, ADR-0001) | Executed |
-| Packaging scaffold authored (manifest, patch, entry, locales, icon, examples) | Executed |
-| Contract tests authored and run offline (`node --test`, Node 22) | Executed — see report below |
-| Standalone contract checker authored and run (`node scripts/check.mjs`) | Executed |
-| `npm pack --dry-run` file-list inspection (offline; no tarball written) | Executed — 9 files, no unintended content |
-| Static offline check of the host entry (no network/child-process/DSH imports) | Executed by contract test |
-| Icon structural validation (SVG, no scripts/text/external refs, < 256 KiB) | Executed by contract test |
+| Offline test suite (`node --test --test-force-exit "test/*.test.js"`) | **256/256 pass** (unit, integration, packaging contract) |
+| Standalone packaging check (`node scripts/check.mjs`) | **12/12 checks pass** |
+| `npm pack --dry-run --json` file-list inspection (offline) | **Executed** — 24 files, no dev-tree content; no tarball written |
+| M0 smoke (`node scripts/m0-smoke.mjs`) | **14 pass / 0 fail / 1 blocked** — `@deepseek-ai/dsh-atomic-write` is not resolvable from the repository context; the native lease is the shipped path |
+| Scratch-profile offline E2E (`pwsh -File scripts/e2e-dsh.ps1`) | **8/8 checks, 7/7 assertions** — scratch `DSH_HOME`, local Messages-API mock, two real headless sessions in one workspace: session 1 publishes with `confluence_post`, session 2 receives it in the passive pulse; durable journal + committed pulse snapshots + no Confluence inbox splice; artifacts under `.tmp/e2e/run-*/` |
+| Real desktop-profile install (Plugin Manager `install_bundle`) | **Executed** — `application: applied`; dependency `dsh-confluence: link:D:/05_Code/Confluence` + bundle selected; six tools visible to the live Host; pulse rendered in this session's runtime context; `confluence_board` executed and returned an untrusted-framed board result; store created under the real `~/.dsh/storages/confluence/v1/` |
+| Export producer CLI (`node scripts/export-memories.mjs`) | **Executed** against the E2E scratch store — valid `manifest.json` + `memories.v1.jsonl`, deterministic hash, `--dry-run` writes nothing |
+| `solo-bench` Go consumer (`internal/confluenceexport`) | **Executed** — `go test ./...`, `go vet ./...`, `gofmt -l .` clean; export-only contract, no live IPC |
+| Static offline/no-egress scan, locale parity, icon validation | **Executed by the contract checks** |
 
-Not executed during this design phase:
+Not executed yet:
 
 | Check | Status |
 |---|---|
-| Installing the bundle into any DSH profile | **Not executed** |
-| Activation inside a live DSH host; observing the single warning | **Not executed** |
-| Pulse injection, board tools, recall, panel rendering | **Not implemented, not executed** |
-| Multi-window / multi-process concurrency behaviour | **Not executed** (design + spike plan only) |
-| Building/hashing the tarball (`npm pack`), `npm publish --dry-run` | **Not executed** (dry-run listing executed) |
-| Publishing to npm or creating a GitHub release | **Not executed — nothing was published** |
-| Merge into `solo-bench` | **Not executed** (merge path documented only) |
-
-No benchmarks, screenshots, user counts or performance numbers are claimed anywhere in this
-repository; where a number appears (token budget, caps, storage sizes), it is a **design target**.
+| Panel rendering / visual verification | **Not executed** — the client bundle loads on the next page render; Host routes are registered and auth-guarded (static client contract tests pass) |
+| PTC preset (`run_code`) tool reachability | **Not executed** — M0-S3 spike remains open |
+| Multi-window live freshness measurement | **Not executed** — polling is the implemented contract; two-process merge is covered by tests |
+| Soak/compaction stress, long-run retention | **Not executed** |
+| Built tarball + SHA-256, publish/release | **Not executed — nothing was published** |
 
 ---
 

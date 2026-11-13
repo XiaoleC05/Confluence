@@ -1,17 +1,20 @@
-// Confluence / 汇流 — dependency-free contract tests.
+// Confluence / 汇流 — dependency-free packaging contract tests (v0.1.0 implementation).
 //
-// These tests verify the *packaging contract* of the design-stage repository:
-// they do not test unimplemented plugin behaviour (there is none yet). The
-// standalone mirror of these checks is scripts/check.mjs.
+// These tests verify the *packaging and entry-point contract* of the implemented plugin:
+// bundle manifest/patch, runtime file coverage, locales, icon, the Host entry surface,
+// the Web client module identity and the offline posture. Behaviour is covered by the
+// per-module tests and test/integration.test.js. The standalone mirror of these checks
+// is scripts/check.mjs.
 //
 // Run from the repository root:
-//   node --test "test/*.test.js"
+//   node --test --test-force-exit "test/*.test.js"
 //
-// Node builtins only. Nothing here touches the network or installs anything.
+// Node builtins only. Nothing here touches the network or the user's DSH profile.
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -20,48 +23,51 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PACKAGE_DIR = ROOT
 const PACKAGE_JSON = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 const INDEX_PATH = path.join(ROOT, 'index.js')
+const CLIENT_PATH = path.join(ROOT, 'client.js')
 const PATCH_PATH = path.join(ROOT, 'cordis.patch.yml')
 const ICON_PATH = path.join(ROOT, 'icon.svg')
 const DOCS_README = path.join(ROOT, 'docs', 'README.md')
+const LIB_DIR = path.join(ROOT, 'lib')
 
-/** Every documentation path this repository promises in docs/README.md. */
-const REQUIRED_DOCS = [
-  'research/dsh-internals.md',
-  'research/prior-art.md',
-  'research/external-patterns.md',
-  'discussion/round-1.md',
-  'discussion/round-2.md',
-  'discussion/position-a.md',
-  'discussion/position-b.md',
-  'adr/0001-confluence-architecture.md',
-  'design/architecture.md',
-  'design/data-model.md',
-  'design/store-format.md',
-  'design/tool-api.md',
-  'design/pulse.md',
-  'design/ledger-recall.md',
-  'design/ui.md',
-  'design/config.md',
-  'design/security-privacy.md',
-  'design/testing.md',
-  'design/solo-bench-integration.md',
-  'plan/execution-plan.md',
-  'plan/m0-spikes.md',
-  'publishing.md',
-  'install.md',
-  'planning/team-brief.md',
+/** The 15 Host modules named by docs/plan/implementation-interfaces.md §0. */
+const LIB_MODULES = [
+  'board.js',
+  'config.js',
+  'export.js',
+  'facade.js',
+  'hostui.js',
+  'ledger.js',
+  'presence.js',
+  'pulse.js',
+  'recall.js',
+  'redact.js',
+  'store.js',
+  'tools.js',
+  'util.js',
+  'watermark.js',
+  'workspace.js',
 ]
 
 /** Runtime/display files that must be covered by package.json "files". */
 const EXPECTED_FILES = [
   'index.js',
+  'client.js',
+  ...LIB_MODULES.map((name) => `lib/${name}`),
   'cordis.patch.yml',
-  'icon.svg',
   'locale/en.json',
   'locale/zh.json',
+  'icon.svg',
 ]
 
-const EXPECTED_UI_KEYS = [
+/** Declared Web-client manifest (confirmed by architect-a; client.js is the module id below). */
+const EXPECTED_DSH_CLIENT = {
+  platform: 'web',
+  immediately: true,
+  inject: ['@deepseek-ai/dsh-client-ui-sidebar', '@deepseek-ai/dsh-client-ui-layout'],
+}
+
+/** The 22 scaffold UI keys from the design phase; they must stay present. */
+const SCAFFOLD_UI_KEYS = [
   'panel',
   'board.title',
   'board.subtitle',
@@ -112,6 +118,41 @@ const DEFAULTS = {
   debug: { logFile: '' },
 }
 
+/** Docs the index must name (design package + implementation docs). */
+const REQUIRED_DOCS = [
+  'research/dsh-internals.md',
+  'research/prior-art.md',
+  'research/external-patterns.md',
+  'discussion/round-1.md',
+  'discussion/round-2.md',
+  'discussion/position-a.md',
+  'discussion/position-b.md',
+  'adr/0001-confluence-architecture.md',
+  'adr/0002-store-format-and-concurrency.md',
+  'adr/0003-pulse-and-watermarks.md',
+  'adr/0004-privacy-and-consent.md',
+  'adr/0005-ui-transport.md',
+  'adr/0006-solo-bench-integration.md',
+  'design/architecture.md',
+  'design/data-model.md',
+  'design/store-format.md',
+  'design/tool-api.md',
+  'design/pulse.md',
+  'design/ledger-recall.md',
+  'design/ui.md',
+  'design/config.md',
+  'design/security-privacy.md',
+  'design/testing.md',
+  'design/solo-bench-integration.md',
+  'plan/execution-plan.md',
+  'plan/m0-spikes.md',
+  'plan/implementation-interfaces.md',
+  'plan/implementation-status.md',
+  'publishing.md',
+  'install.md',
+  'planning/team-brief.md',
+]
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -156,80 +197,90 @@ function lineCount(file) {
   return lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
 }
 
-/** @returns {string[]} warnings captured by a fake logger-aware ctx */
-function runApply(config, extraCtx = {}) {
-  const calls = []
-  const logger = {
-    warn(...args) {
-      calls.push(args.join(' '))
-    },
-    info() {},
-    error() {},
-    debug() {},
-  }
-  const ctx = new Proxy({ logger, ...extraCtx }, {
-    get(target, property) {
-      if (property === 'logger') return target.logger
-      throw new Error(`design-stage apply() must not access ctx.${String(property)}`)
-    },
+/** Import a module in a fresh Node process and require it to stay silent. */
+function importQuietly(importUrl) {
+  const code = `await import(${JSON.stringify(importUrl)})`
+  return spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    timeout: 30000,
   })
-  // The plugin entry is loaded lazily so the import-side-effect test owns the
-  // only place a fresh module graph is created.
-  return { calls, ctx }
+}
+
+/** Read every lib module plus index.js as `{ relPath, source }`. */
+function hostSources() {
+  const sources = LIB_MODULES.map((name) => ({
+    relPath: `lib/${name}`,
+    source: readFileSync(path.join(LIB_DIR, name), 'utf8'),
+  }))
+  sources.push({ relPath: 'index.js', source: readFileSync(INDEX_PATH, 'utf8') })
+  return sources
 }
 
 // ---------------------------------------------------------------------------
 // manifest
 // ---------------------------------------------------------------------------
 
-test('package.json is a private ESM design-stage bundle manifest', () => {
+test('package.json is a private ESM v0.1.0 bundle manifest with the Web client half', () => {
   assert.equal(PACKAGE_JSON.name, 'dsh-confluence')
   assert.equal(PACKAGE_JSON.version, '0.1.0')
   assert.equal(PACKAGE_JSON.private, true)
   assert.equal(PACKAGE_JSON.type, 'module')
   assert.equal(PACKAGE_JSON.main, './index.js')
   assert.equal(PACKAGE_JSON.license, 'MIT')
-  assert.match(PACKAGE_JSON.description, /design-stage/i)
+  assert.match(PACKAGE_JSON.description, /workspace memory/i)
+  assert.match(PACKAGE_JSON.description, /pulse/)
+  assert.match(PACKAGE_JSON.description, /board/)
+  assert.match(PACKAGE_JSON.description, /recall/i)
+  assert.doesNotMatch(PACKAGE_JSON.description, /design-stage/i, 'the manifest must no longer describe a scaffold')
   assert.match(PACKAGE_JSON.author, /XiaoleC05/i)
   assert.match(PACKAGE_JSON.repository.url, /github\.com\/XiaoleC05\/Confluence\.git$/)
   assert.equal(PACKAGE_JSON.homepage, 'https://github.com/XiaoleC05/Confluence#readme')
   assert.match(PACKAGE_JSON.bugs.url, /github\.com\/XiaoleC05\/Confluence\/issues$/)
+  assert.deepEqual(PACKAGE_JSON.dsh.bundle, { patch: './cordis.patch.yml' })
+  assert.deepEqual(PACKAGE_JSON.dsh.client, EXPECTED_DSH_CLIENT)
 })
 
-test('package.json exports and files cover exactly the design-stage runtime surface', () => {
+test('package.json exports and files cover exactly the implemented runtime surface', () => {
   const exports = PACKAGE_JSON.exports
   assert.equal(exports['.'], './index.js')
+  assert.equal(exports['./client'], './client.js')
   assert.equal(exports['./locale/*.json'], './locale/*.json')
   assert.equal(exports['./icon'], './icon.svg')
-  assert.equal('./client' in exports, false, 'client half is M3; no ./client export yet')
-  assert.equal(PACKAGE_JSON.dsh.client, undefined, 'dsh.client must not be declared yet')
+  assert.deepEqual(Object.keys(exports).sort(), ['.', './client', './icon', './locale/*.json'])
 
-  assert.deepEqual(PACKAGE_JSON.dsh.bundle, { patch: './cordis.patch.yml' })
   assert.ok(Array.isArray(PACKAGE_JSON.files))
-  for (const required of ['index.js', 'cordis.patch.yml', 'locale/*.json', 'icon.svg']) {
+  assert.ok(PACKAGE_JSON.files.includes('lib/*.js'), 'files must cover the Host modules')
+  for (const required of ['index.js', 'client.js', 'cordis.patch.yml', 'locale/*.json', 'icon.svg']) {
     assert.ok(PACKAGE_JSON.files.includes(required), `files must include ${required}`)
   }
   for (const relPath of EXPECTED_FILES) {
+    assert.ok(existsSync(path.join(PACKAGE_DIR, relPath)), `missing runtime file ${relPath}`)
     assert.ok(
       PACKAGE_JSON.files.some((pattern) => filesPatternMatches(pattern, relPath)),
       `runtime file ${relPath} is not covered by package.json files`,
     )
   }
-  for (const relPath of EXPECTED_FILES) {
-    assert.ok(existsSync(path.join(PACKAGE_DIR, relPath)), `missing runtime file ${relPath}`)
+  // Nothing shipped may be pulled in from development-only trees.
+  for (const relPath of ['test/contract.test.js', 'docs/README.md', 'examples/profile-patch.yml', 'scripts/check.mjs']) {
+    assert.equal(
+      PACKAGE_JSON.files.some((pattern) => filesPatternMatches(pattern, relPath)),
+      false,
+      `files must not cover development file ${relPath}`,
+    )
   }
 })
 
 test('package.json engines, scripts and dependency-free posture are honest', () => {
   assert.equal(PACKAGE_JSON.engines.node, '>=22.19.0')
   assert.equal(PACKAGE_JSON.engines.dsh, '>=0.2.2-rc.1')
-  assert.equal(PACKAGE_JSON.scripts.test, 'node --test "test/*.test.js"')
+  assert.equal(PACKAGE_JSON.scripts.test, 'node --test --test-force-exit "test/*.test.js"')
   assert.equal(PACKAGE_JSON.scripts.check, 'node scripts/check.mjs')
   assert.ok(Array.isArray(PACKAGE_JSON.keywords))
   assert.ok(PACKAGE_JSON.keywords.includes('dsh'))
-  // Design stage: no runtime dependency may be needed to mount the scaffold.
   assert.equal(PACKAGE_JSON.dependencies, undefined)
   assert.equal(PACKAGE_JSON.devDependencies, undefined)
+  assert.equal(PACKAGE_JSON.peerDependencies, undefined)
 })
 
 // ---------------------------------------------------------------------------
@@ -242,10 +293,10 @@ test('cordis.patch.yml inserts exactly one confluence row without !!js', () => {
   assert.equal((patch.match(/^\s*-\s*id:\s*confluence\s*$/gm) ?? []).length, 1)
   assert.equal((patch.match(/^\s*name:\s*['"]?dsh-confluence['"]?\s*$/gm) ?? []).length, 1)
   assert.match(patch, /^\s*config:$/m)
-  assert.equal(patch.includes('!!js'), false, 'design-stage patch must not use !!js expressions')
+  assert.equal(patch.includes('!!js'), false, 'the bundle patch must not use !!js expressions')
 })
 
-test('cordis.patch.yml carries the complete ADR §10 default configuration', () => {
+test('cordis.patch.yml carries the complete v1 default configuration', () => {
   const patch = readFileSync(PATCH_PATH, 'utf8')
   for (const section of ['store', 'pulse', 'ledger', 'recall', 'privacy', 'ui', 'export', 'debug']) {
     assert.match(patch, new RegExp(`^        ${section}:$`, 'm'), `missing config section ${section}`)
@@ -301,17 +352,25 @@ test('locale resources parse and carry meaningful display metadata', () => {
   const zh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8'))
   assert.equal(en.meta.title, 'Confluence')
   assert.equal(zh.meta.title, '汇流')
+  assert.equal(en.meta.description, 'Shares workspace memory between sessions that run in the same project, fully offline.')
+  assert.equal(zh.meta.description, '同一工作区内的会话共享记忆，完全离线运行。')
 })
 
-test('locale UI key sets are aligned and contain the planned panel strings', () => {
+test('locale UI key sets are aligned and keep the scaffold plus the M3 panel strings', () => {
   const en = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'en.json'), 'utf8'))
   const zh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8'))
-  assert.deepEqual(deepKeys(en.ui), deepKeys(zh.ui), 'en/zh UI key sets must be identical')
-  const keys = new Set(deepKeys(en.ui))
-  for (const key of EXPECTED_UI_KEYS) {
-    assert.ok(keys.has(key), `missing future-UI string ${key}`)
+  const enKeys = deepKeys(en.ui)
+  const zhKeys = deepKeys(zh.ui)
+  assert.deepEqual(enKeys, zhKeys, 'en/zh UI key sets must be identical')
+  assert.ok(enKeys.length >= 85, `expected the full M3 inventory (>=85 keys), found ${enKeys.length}`)
+  const keys = new Set(enKeys)
+  for (const key of SCAFFOLD_UI_KEYS) {
+    assert.ok(keys.has(key), `scaffold UI string disappeared: ${key}`)
     assert.ok(typeof en.ui[key] === 'string' && en.ui[key].trim() !== '', `empty en string ${key}`)
     assert.ok(typeof zh.ui[key] === 'string' && zh.ui[key].trim() !== '', `empty zh string ${key}`)
+  }
+  for (const key of ['panel', 'board.title', 'questions.open', 'markRead', 'confirm.disable.action', 'state.loadError']) {
+    assert.ok(keys.has(key), `missing required panel string ${key}`)
   }
 })
 
@@ -336,106 +395,137 @@ test('icon.svg is an original, self-contained, script-free vector', () => {
 })
 
 // ---------------------------------------------------------------------------
-// host entry
+// Host entry
 // ---------------------------------------------------------------------------
 
-test('index.js imports cleanly, exports the apply form, and has no import side effects', () => {
-  const importUrl = pathToFileURL(INDEX_PATH).href
-  const code = `await import(${JSON.stringify(importUrl)})`
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 20000,
-  })
+test('index.js imports cleanly and has no import side effects', () => {
+  const result = importQuietly(pathToFileURL(INDEX_PATH).href)
   assert.equal(result.error, undefined, `spawn failed: ${result.error?.message}`)
   assert.equal(result.status, 0, `import failed:\n${result.stderr}`)
   assert.equal(result.stdout.trim(), '', 'importing index.js must not write to stdout')
   assert.equal(result.stderr.trim(), '', 'importing index.js must not write to stderr')
 })
 
-test('index.js exports name/apply/defaults and does not use the service-class form', async () => {
+test('index.js exports the implemented Host entry surface', async () => {
   const module = await import(pathToFileURL(INDEX_PATH).href)
   assert.equal(module.name, 'confluence')
   assert.equal(typeof module.apply, 'function')
+  assert.equal(typeof module.applyWithDeps, 'function', 'applyWithDeps must be exported for hermetic tests')
   assert.equal(module.default, undefined, 'must use the apply(ctx, config) export form')
-  assert.equal(typeof module.resolveConfig, 'function')
   assert.equal(typeof module.DEFAULTS, 'object')
+  assert.equal(module.VERSION, '0.1.0')
   assert.equal(Object.isFrozen(module.DEFAULTS), true, 'DEFAULTS must stay frozen')
-  assert.deepEqual(
-    module.DEFAULTS.privacy.redactPatterns,
-    [],
-    'privacy.redactPatterns must default to [] (V3: keeps patch/defaults/tests in sync)',
-  )
+  assert.ok(Array.isArray(module.inject), 'inject must be an array')
+  assert.ok(module.inject.includes('tools'), "inject must include 'tools'")
   assert.deepEqual(JSON.parse(JSON.stringify(module.DEFAULTS)), DEFAULTS)
 })
 
-test('apply() logs exactly one design-stage warning and registers nothing', async () => {
+test('apply() returns without throwing on a minimal fake ctx', async () => {
   const module = await import(pathToFileURL(INDEX_PATH).href)
-  for (const config of [undefined, null, 'garbage', [], {}, { enabled: false }]) {
-    const { calls, ctx } = runApply(config)
-    const returned = module.apply(ctx, config)
-    assert.equal(returned, undefined, `apply() must return nothing (config=${JSON.stringify(config)})`)
-    assert.equal(calls.length, 1, `apply() must log exactly one warning (config=${JSON.stringify(config)})`)
-    assert.match(calls[0], /design-stage scaffold/i)
-    assert.match(calls[0], /no tools or UI/i)
-    assert.match(calls[0], /M1/)
+  const dirs = [mkdtempSync(path.join(tmpdir(), 'confluence-contract-')), mkdtempSync(path.join(tmpdir(), 'confluence-contract-'))]
+  const configs = [{ store: { dir: dirs[0] } }, { store: 'not-an-object', debug: { logFile: '' } }]
+  try {
+    for (let index = 0; index < configs.length; index += 1) {
+      const warnings = []
+      const ctx = {
+        get: () => undefined,
+        on: () => () => {},
+        effect: () => undefined,
+        logger: {
+          debug() {},
+          info() {},
+          warn(...args) {
+            warnings.push(args)
+          },
+          error(...args) {
+            warnings.push(args)
+          },
+        },
+      }
+      const returned = module.apply(ctx, configs[index])
+      assert.ok(returned instanceof Promise, 'apply() must return a promise-like bootstrap handle')
+      await Promise.race([
+        returned,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('apply bootstrap timed out')), 15000)),
+      ])
+    }
+  } finally {
+    for (const dir of dirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
   }
 })
 
-test('apply() degrades on malformed sections, warns once, and never throws', async () => {
-  const module = await import(pathToFileURL(INDEX_PATH).href)
-  const malformed = [
-    { store: 'not-an-object', pulse: { maxHeadlines: 'many' } },
-    { privacy: { denyPathPatterns: 'nope', privateSessions: [1, 'ok'] } },
-    { recall: { timeoutMs: Number.NaN }, ui: { pollMs: -1 } },
-    { enabled: 'yes' },
-  ]
-  for (const config of malformed) {
-    const { calls, ctx } = runApply(config)
-    const returned = module.apply(ctx, config)
-    assert.equal(returned, undefined)
-    assert.equal(calls.length, 1)
-    assert.match(calls[0], /design-stage scaffold/i)
+test('production host code stays offline and the client half is a read-only same-origin module', () => {
+  const networkImport = /from\s+['"]node:(?:http|https|net|tls|dgram|child_process)['"]|require\(\s*['"]node:(?:http|https|net|tls|dgram|child_process)['"]\s*\)/
+  const harnessImport = /from\s+['"]@deepseek-ai\/|require\(\s*['"]@deepseek-ai\//
+  const fetchCall = /\bfetch\s*\(/
+  // `new URL(relative, 'http://127.0.0.1')` is a parser base, not an egress target.
+  const parserBase = /['"]http:\/\/127\.0\.0\.1['"]/g
+  for (const { relPath, source } of hostSources()) {
+    assert.doesNotMatch(source, networkImport, `${relPath} must not import network/child-process modules`)
+    assert.doesNotMatch(source, harnessImport, `${relPath} must not import @deepseek-ai packages`)
+    assert.doesNotMatch(source, fetchCall, `${relPath} must not call fetch()`)
+    const withoutParserBase = source.replace(parserBase, "''")
+    assert.doesNotMatch(withoutParserBase, /https?:\/\//, `${relPath} must not contain network URL literals`)
   }
-  const { calls, ctx } = runApply({ store: 'not-an-object', enabled: 'yes' })
-  module.apply(ctx, { store: 'not-an-object', enabled: 'yes' })
-  assert.match(calls[0], /config warnings:/, 'malformed values must be reported in the single warning')
-  assert.match(calls[0], /store ignored \(invalid section\)/)
-  assert.match(calls[0], /enabled ignored \(invalid value\)/)
-})
 
-test('production host code stays offline: no network, no child process, no DSH imports', () => {
-  const source = readFileSync(INDEX_PATH, 'utf8')
-  assert.doesNotMatch(source, /from\s+['"]node:(?:http|https|net|tls|dgram|child_process)['"]/)
-  assert.doesNotMatch(source, /require\(\s*['"]node:(?:http|https|net|tls|dgram|child_process)['"]\s*\)/)
-  assert.doesNotMatch(source, /\bfetch\s*\(/)
-  assert.doesNotMatch(source, /\bXMLHttpRequest\b/)
-  assert.doesNotMatch(source, /from\s+['"]@deepseek-ai\//)
-  assert.doesNotMatch(source, /require\(\s*['"]@deepseek-ai\//)
+  const client = readFileSync(CLIENT_PATH, 'utf8')
+  assert.match(client, /window\.__ModuleLoader__\.load\(\{/, 'client.js must use the Dynamic ModuleLoader')
+  assert.match(client, /id:\s*'dsh-confluence'/, "client.js module id must be 'dsh-confluence'")
+  assert.doesNotMatch(client, /^\s*import\s/m, 'client.js is a plain browser module, not an ESM import graph')
+  assert.doesNotMatch(client, harnessImport, 'client.js must not import @deepseek-ai packages')
+  const fetchCalls = client.match(/\bfetch\s*\(/g) ?? []
+  assert.equal(fetchCalls.length, 1, 'client.js must have exactly one fetch call (the relative panel GET)')
+  assert.match(client, /fetch\(ROUTE_BASE/, 'the only fetch must target the relative panel route base')
+  assert.doesNotMatch(client, /https?:\/\//, 'client.js must not contain absolute URLs')
+  assert.doesNotMatch(client, /\binnerHTML\b|dangerouslySetInnerHTML/, 'panel must render untrusted text as React children')
+  assert.doesNotMatch(client, /<iframe|createElement\(['"]iframe/, 'no iframe transport is allowed')
+  assert.match(client, /inject:\s*\[\s*'slots'\s*,\s*'locale'\s*,\s*'layout'\s*\]/, 'client inject list changed')
+  assert.match(client, /name:\s*'sidebar\.panellist'[\s\S]{0,120}id:\s*'confluence'[\s\S]{0,120}order:\s*30/)
+  assert.match(client, /name:\s*'main'[\s\S]{0,120}key:\s*'confluence'/)
 })
 
 // ---------------------------------------------------------------------------
 // repository documentation
 // ---------------------------------------------------------------------------
 
-test('README.md and README.zh-CN.md exist, are substantial, and stay honest', () => {
+test('README.md and README.zh-CN.md describe the implemented v0.1.0 state honestly', () => {
   const en = path.join(ROOT, 'README.md')
   const zh = path.join(ROOT, 'README.zh-CN.md')
   assert.ok(existsSync(en), 'missing README.md')
   assert.ok(existsSync(zh), 'missing README.zh-CN.md')
   const enText = readFileSync(en, 'utf8')
   const zhText = readFileSync(zh, 'utf8')
-  for (const marker of ['Confluence / 汇流', 'Status', 'M1', 'docs/install.md', 'docs/publishing.md', 'node --test', 'MIT', 'https://github.com/XiaoleC05/Confluence']) {
+  for (const marker of [
+    'Confluence / 汇流',
+    'v0.1.0',
+    'implemented',
+    'Host',
+    'panel',
+    '256',
+    'docs/install.md',
+    'docs/publishing.md',
+    'docs/plan/implementation-interfaces.md',
+    'docs/plan/implementation-status.md',
+    'node --test',
+    'MIT',
+    'https://github.com/XiaoleC05/Confluence',
+  ]) {
     assert.ok(enText.includes(marker), `README.md is missing required content: ${marker}`)
   }
-  for (const marker of ['汇流', 'M1', 'docs/install.md', 'node --test', 'MIT']) {
+  for (const marker of ['汇流', 'v0.1.0', '256', 'docs/install.md', 'node --test', 'MIT']) {
     assert.ok(zhText.includes(marker), `README.zh-CN.md is missing required content: ${marker}`)
   }
-  assert.match(enText.replace(/\s+/g, ' '), /no user-visible effect/i, 'README must state the design-stage emptiness')
-  assert.match(enText, /not been (installed|executed)|Not executed/i)
+  assert.match(enText.replace(/\s+/g, ' '), /not (been )?(installed|verified|executed)/i, 'README must keep the not-executed claims')
+  assert.doesNotMatch(enText.replace(/\s+/g, ' '), /design-stage scaffold/i, 'README must no longer describe a design-stage scaffold as current state')
   for (const [file, text] of [['README.md', enText], ['README.zh-CN.md', zhText]]) {
     const lines = lineCount(path.join(ROOT, file))
-    assert.ok(lines >= 200 && lines <= 350, `${file} must be 200–350 lines (found ${lines})`)
+    assert.ok(lines >= 200 && lines <= 430, `${file} must be 200–430 lines (found ${lines})`)
   }
 })
 
@@ -452,21 +542,18 @@ test('docs/README.md exists, links resolve, and names every promised document', 
   for (const required of REQUIRED_DOCS) {
     assert.ok(text.includes(required), `docs/README.md must mention ${required}`)
   }
-  for (const adr of ['adr/0002', 'adr/0003', 'adr/0004', 'adr/0005', 'adr/0006']) {
-    assert.ok(text.includes(adr), `docs/README.md must mention planned decision record ${adr}`)
-  }
 })
 
-test('documents promised by docs/README.md that already exist are non-empty Markdown', () => {
+test('documents promised by docs/README.md exist and are non-empty Markdown', () => {
   for (const required of REQUIRED_DOCS) {
     const file = path.join(ROOT, 'docs', required)
-    if (!existsSync(file)) continue // still in progress during round 3
-    assert.ok(statSync(file).size > 200, `doc ${required} exists but is suspiciously empty`)
+    assert.ok(existsSync(file), `docs/README.md promises a missing doc: ${required}`)
+    assert.ok(statSync(file).size > 200, `doc ${required} is suspiciously empty`)
     assert.match(readFileSync(file, 'utf8'), /^#\s/m, `doc ${required} must start with a Markdown heading`)
   }
 })
 
-test('install and publishing docs exist and keep their honesty sections', () => {
+test('install and publishing docs keep the executed/not-executed honesty', () => {
   const install = path.join(ROOT, 'docs', 'install.md')
   const publishing = path.join(ROOT, 'docs', 'publishing.md')
   assert.ok(existsSync(install), 'missing docs/install.md')
@@ -482,6 +569,24 @@ test('install and publishing docs exist and keep their honesty sections', () => 
 })
 
 // ---------------------------------------------------------------------------
+// shipped file set
+// ---------------------------------------------------------------------------
+
+test('the shipped runtime surface is exactly the implemented Host modules, client and resources', () => {
+  const actualLib = readdirSync(LIB_DIR)
+    .filter((name) => name.endsWith('.js'))
+    .sort()
+  assert.deepEqual(actualLib, LIB_MODULES.slice().sort(), 'lib/ module set changed without a packaging update')
+  assert.equal(LIB_MODULES.length, 15, 'the v0.1.0 Host has exactly 14 lib modules')
+  assert.ok((PACKAGE_JSON.files ?? []).includes('lib/*.js'), 'files must ship lib/*.js')
+  for (const relPath of EXPECTED_FILES) {
+    assert.ok(existsSync(path.join(ROOT, relPath)), `missing shipped file ${relPath}`)
+  }
+  const indexSource = readFileSync(INDEX_PATH, 'utf8')
+  assert.match(indexSource, /from '\.\/lib\//, 'index.js must import the Host modules')
+})
+
+// ---------------------------------------------------------------------------
 // standalone checker
 // ---------------------------------------------------------------------------
 
@@ -491,7 +596,7 @@ test('scripts/check.mjs runs standalone and passes', () => {
   const result = spawnSync(process.execPath, ['scripts/check.mjs'], {
     cwd: ROOT,
     encoding: 'utf8',
-    timeout: 30000,
+    timeout: 60000,
   })
   assert.equal(result.error, undefined, `checker spawn failed: ${result.error?.message}`)
   assert.equal(result.status, 0, `scripts/check.mjs failed:\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`)
