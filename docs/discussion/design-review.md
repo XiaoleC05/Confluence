@@ -1,4 +1,4 @@
-# Independent design review — Confluence / 汇流 v1 (round 3)
+# Independent design review — Confluence / 高级记忆 v1 (round 3)
 
 - Reviewer: `architect-b`, acting as the independent verifier (did not author the round-3 documents).
 - Date: 2026-11-13. Phase: design-only; nothing installed, no profile change, no change to `solo-bench` or `Crisp`.
@@ -36,7 +36,7 @@ observation; see V23). Everything else in `README.md`'s "Verification status" ta
 
 | Requirement (user request / brief) | Evidence | Status |
 |---|---|---|
-| English name **Confluence**, Chinese **汇流** | `package.json` name `dsh-confluence`; `locale/en.json:2` `meta.title:"Confluence"`; `locale/zh.json:2` `"汇流"`; README/README.zh-CN both use the pair; icon `aria-label` | **PASS** |
+| English name **Confluence**, Chinese **高级记忆** | `package.json` name `dsh-confluence`; `locale/en.json:2` `meta.title:"Confluence"`; `locale/zh.json:2` `"高级记忆"`; README/README.zh-CN both use the pair; icon `aria-label` | **PASS** |
 | Complete project shape: docs, repository layout, manifest, icon, locale, license | `package.json`, `cordis.patch.yml`, `index.js`, `locale/*.json`, `icon.svg`, `LICENSE` (MIT, 2026 XiaoleC05), `README.md` + `README.zh-CN.md`, `docs/` tree (research, rounds, ADRs, design, plan, install, publishing), `examples/profile-patch.yml`, `test/`, `scripts/check.mjs` | **PASS** (phase scope: design + packaging scaffold; `lib/`/`client.js` intentionally absent and the docs say so — see the matrix note below) |
 | Fully offline: no network, no server, no extra port, no external DB/model | ADR-0001 §3/§11, `architecture.md` §6, `security-privacy.md` §3.5, `docs/install.md` §5; scaffold static check passes (`test/contract.test.js:400-408`); no `dependencies`, no `.listening`/spawn in `index.js` | **PASS (design + scaffold static)**; runtime behavior not executable yet, gated by M0 |
 | Later merged into `solo-bench`, low-risk documented path, no changes now | ADR-0006 (subtree + export-only contract), `solo-bench-integration.md` (constraints read from `solo-bench` docs, no fifth service row, no license file, no DB/network/os-exec), `solo-bench` untouched (E9) | **PASS** (merge not executed, by phase design) |

@@ -7,6 +7,9 @@
 - Read this before restarting DSH. The upgrade is **not** triggered by copying files: the installed
   bundle is a local link (`link:D:/05_Code/Confluence`), so DSH must be restarted to load the new Host
   module generation.
+- **v0.2.1 display-name patch:** if you already run v0.2.0, no config/data action is needed — v0.2.1
+  only changes the Chinese display name from **汇流** to **高级记忆**; restart DSH and refresh the Web
+  panel to show it. Scope, store format, tool API and export contract are unchanged.
 
 ## 1. What changed
 

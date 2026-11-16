@@ -1,4 +1,4 @@
-// Confluence / 汇流 — WP8/M4 universal-memory export tests (`confluence.memories/v1`, v0.2.0).
+// Confluence / 高级记忆 — WP8/M4 universal-memory export tests (`confluence.memories/v1`, v0.2.0).
 //
 // Contract: docs/adr/0007-universal-memory-scope.md §2 item 7, docs/plan/scope-refactor-delta.md
 // §8, docs/design/store-format.md §13.3/§14 (authoritative bytes + integrity rules) and
@@ -356,7 +356,7 @@ test('EXP-01 export writes a universal manifest and v1 records with the global w
   assert.equal(manifest.schema, EXPORT_SCHEMA)
   assert.equal(manifest.formatVersion, EXPORT_FORMAT_VERSION)
   assert.equal(manifest.scope, 'global')
-  assert.deepEqual(manifest.producer, { name: 'dsh-confluence', version: '0.2.0', dsh: '0.2.2-rc.1' })
+  assert.deepEqual(manifest.producer, { name: 'dsh-confluence', version: '0.2.1', dsh: '0.2.2-rc.1' })
   assert.equal(manifest.generatedAt, ISO(NOW))
   assert.deepEqual(manifest.workspace, { wsKey: GLOBAL_SCOPE_KEY, name: GLOBAL_SCOPE_LABEL })
   assert.equal(manifest.workspace.name, 'All sessions')

@@ -1,4 +1,4 @@
-# Confluence / 汇流 — test strategy
+# Confluence / 高级记忆 — test strategy
 
 Status: **design-phase test specification, with executed v0.2.0 evidence.** The specification itself
 is the design contract; the v0.2.0 implementation ships the suites and the harness it describes. The

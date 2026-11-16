@@ -124,7 +124,7 @@ PulseService deps: getScope(sessionId) -> { key:'global', label:'All sessions' }
   - `GET /confluence/panel/entry?id=` → `{ok:true, entry:{…, workspaceLabel?}, replies:[…]}` (no ws param)
   - Remove the `/workspaces` route (client updated accordingly) or keep it returning a single global
     scope row for back-compat; prefer remove + update client.
-- `client.js`: title "汇流记忆 / Confluence memory"; no workspace switcher; a global timeline with
+- `client.js`: title "高级记忆 / Confluence memory"; no workspace switcher; a global timeline with
   kind filter + free-text search (search matches titles/bodies/tags; a separate tag facet is out of
   scope for v0.2.0), entry detail + thread, live peers; each entry shows its provenance workspace
   label chip (when present); locale keys updated (packaging owns locale files).

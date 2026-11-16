@@ -1,4 +1,4 @@
-// Confluence / 汇流 — redaction unit tests (WP2, owner design-behavior).
+// Confluence / 高级记忆 — redaction unit tests (WP2, owner design-behavior).
 //
 // Contract: docs/plan/implementation-interfaces.md §4; conformance rows UT-REDACT-01..06,
 // security-privacy §3.2–§3.3 (T1/T2/T5-style cases at unit level); data-model §4.1/§6 caps.

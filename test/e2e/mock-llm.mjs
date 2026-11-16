@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — deterministic local model stub for the offline E2E harness.
+// Confluence / 高级记忆 — deterministic local model stub for the offline E2E harness.
 //
 // This is the ONLY "server" the Confluence E2E run uses. It binds 127.0.0.1 on a
 // random port, speaks the Messages-compatible wire format of the installed

@@ -5,7 +5,7 @@ deliverables and their reports. Round 2 (cross-critique + decision) is in
 [`round-2.md`](round-2.md); the decision itself is recorded in
 [`../adr/0001-confluence-architecture.md`](../adr/0001-confluence-architecture.md).
 
-Project: **Confluence / 汇流** — a fully-offline DeepSeek Harness (DSH) plugin that makes
+Project: **Confluence / 高级记忆** — a fully-offline DeepSeek Harness (DSH) plugin that makes
 information sharing between sessions of the same workspace automatic instead of a manual
 "please write it to a doc" instruction. Target runtime: DSH Desktop **0.2.2-rc.1**, profile
 `desktop`, Windows 11. No server, no network, no extra port, later merged into `solo-bench`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — offline E2E assertions for one `scripts/e2e-dsh.ps1` run.
+// Confluence / 高级记忆 — offline E2E assertions for one `scripts/e2e-dsh.ps1` run.
 //
 // v0.2.0 (ADR-0007): the memory boundary is the DSH profile, not the workspace.
 // The harness therefore runs acceptance sessions in TWO different directories of

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — offline E2E session-log reader.
+// Confluence / 高级记忆 — offline E2E session-log reader.
 //
 // DSH persists one logical session as a v4 JSONL file whose records are written
 // in **concatenated zstd frames** (one frame per append batch), inside

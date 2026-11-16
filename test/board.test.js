@@ -1,4 +1,4 @@
-// Confluence / 汇流 — board unit tests (WP2, owner design-behavior).
+// Confluence / 高级记忆 — board unit tests (WP2, owner design-behavior).
 //
 // v0.2.0 universal memory (ADR-0007 / scope-refactor-delta §3): there is ONE global board per DSH
 // profile. These tests pin the scope-less API, the global entry record shape (`ws` =

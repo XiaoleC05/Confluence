@@ -46,7 +46,7 @@ Concretely:
    `confluence_recall` searches **all earlier sessions in the profile** (not only the caller's cwd);
    only the caller itself and `privacy.privateSessions` are excluded, with the same caps
    (≤3 sessions, ≤5 hits, 5 s, literal match). Tool descriptions stop saying "this workspace".
-5. **Panel.** One global timeline, "汇流记忆 / Confluence memory": entries, a kind filter and free-text
+5. **Panel.** One global timeline, "高级记忆 / Confluence memory": entries, a kind filter and free-text
    search (search matches titles, bodies and tags; there is no separate tag-facet control in v0.2.0),
    provenance chip showing the originating workspace label, live peers. No workspace switcher.
 6. **Config (breaking).** Remove `privacy.disabledWorkspaces` (there is no workspace boundary to

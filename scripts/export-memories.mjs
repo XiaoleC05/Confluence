@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — offline universal-memory export CLI (`confluence.memories/v1`).
+// Confluence / 高级记忆 — offline universal-memory export CLI (`confluence.memories/v1`).
 //
 //   node scripts/export-memories.mjs --dsh-home <dir> [--out <dir>] [--json] [--dry-run]
 //

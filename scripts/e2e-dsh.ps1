@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Confluence / 汇流 — offline cross-directory end-to-end harness for the DSH 0.2.2-rc.1 host plugin.
+  Confluence / 高级记忆 — offline cross-directory end-to-end harness for the DSH 0.2.2-rc.1 host plugin.
 
 .DESCRIPTION
   v0.2.0 (ADR-0007) makes shared memory UNIVERSAL: the boundary is the DSH profile,

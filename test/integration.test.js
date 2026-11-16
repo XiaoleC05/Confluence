@@ -1,4 +1,4 @@
-// Confluence / 汇流 — end-to-end wiring test (Lead-owned, v0.2.0 universal scope).
+// Confluence / 高级记忆 — end-to-end wiring test (Lead-owned, v0.2.0 universal scope).
 //
 // Drives the real plugin modules through a fake Cordis context + fake host
 // services (tools, systemPrompt, webServer, agents, sessionQuery) with the real

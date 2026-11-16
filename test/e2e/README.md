@@ -1,4 +1,4 @@
-# Offline cross-directory E2E harness (Confluence / 汇流 v0.2.0)
+# Offline cross-directory E2E harness (Confluence / 高级记忆 v0.2.0)
 
 This directory holds the **release-path end-to-end harness** for the Confluence DSH plugin.
 v0.2.0 (ADR-0007: *universal memory scope*) changes the product claim from "sessions share

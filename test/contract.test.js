@@ -1,4 +1,4 @@
-// Confluence / 汇流 — dependency-free packaging contract tests (v0.2.0 implementation).
+// Confluence / 高级记忆 — dependency-free packaging contract tests (v0.2.0 implementation).
 //
 // These tests verify the *packaging and entry-point contract* of the implemented plugin:
 // bundle manifest/patch, runtime file coverage, locales, icon, the Host entry surface,
@@ -237,7 +237,7 @@ function hostSources() {
 
 test('package.json is a private ESM v0.2.0 bundle manifest with the Web client half', () => {
   assert.equal(PACKAGE_JSON.name, 'dsh-confluence')
-  assert.equal(PACKAGE_JSON.version, '0.2.0')
+  assert.equal(PACKAGE_JSON.version, '0.2.1')
   assert.equal(PACKAGE_JSON.private, true)
   assert.equal(PACKAGE_JSON.type, 'module')
   assert.equal(PACKAGE_JSON.main, './index.js')
@@ -371,7 +371,7 @@ test('locale resources parse and carry meaningful display metadata', () => {
   const en = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'en.json'), 'utf8'))
   const zh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8'))
   assert.equal(en.meta.title, 'Confluence')
-  assert.equal(zh.meta.title, '汇流')
+  assert.equal(zh.meta.title, '高级记忆')
   assert.equal(en.meta.description, 'One shared memory for every session in this profile, fully offline.')
   assert.equal(zh.meta.description, '本配置文件内所有会话共享同一份记忆，完全离线运行。')
   assert.match(en.meta.description, /every session in this profile/i)
@@ -445,7 +445,7 @@ test('index.js exports the implemented Host entry surface', async () => {
   assert.equal(typeof module.applyWithDeps, 'function', 'applyWithDeps must be exported for hermetic tests')
   assert.equal(module.default, undefined, 'must use the apply(ctx, config) export form')
   assert.equal(typeof module.DEFAULTS, 'object')
-  assert.equal(module.VERSION, '0.2.0')
+  assert.equal(module.VERSION, '0.2.1')
   assert.equal(Object.isFrozen(module.DEFAULTS), true, 'DEFAULTS must stay frozen')
   assert.ok(Array.isArray(module.inject), 'inject must be an array')
   assert.ok(module.inject.includes('tools'), "inject must include 'tools'")
@@ -622,7 +622,7 @@ test('production host code stays offline and the client half is a read-only same
   assert.match(client, /name:\s*'sidebar\.panellist'[\s\S]{0,120}id:\s*'confluence'[\s\S]{0,120}order:\s*30/)
   assert.match(client, /name:\s*'main'[\s\S]{0,120}key:\s*'confluence'/)
   // v0.2.0: global panel, provenance instead of a workspace switcher.
-  assert.match(client, /汇流记忆 \/ Confluence memory/, 'the panel title must be the global memory title')
+  assert.match(client, /高级记忆 \/ Confluence memory/, 'the panel title must be the global memory title')
   assert.match(client, /'\/overview'?/, 'the panel must call the global overview route')
   assert.match(client, /'\/entry'?/, 'the panel must call the global entry route')
   assert.doesNotMatch(client, /\/workspaces/, 'the removed /workspaces route must not be called')
@@ -641,7 +641,7 @@ test('README.md and README.zh-CN.md describe the implemented v0.2.0 state honest
   const enText = readFileSync(en, 'utf8')
   const zhText = readFileSync(zh, 'utf8')
   for (const marker of [
-    'Confluence / 汇流',
+    'Confluence / 高级记忆',
     'v0.2.0',
     'v0.1.0',
     'universal',
@@ -668,7 +668,7 @@ test('README.md and README.zh-CN.md describe the implemented v0.2.0 state honest
   ]) {
     assert.ok(enText.includes(marker), `README.md is missing required content: ${marker}`)
   }
-  for (const marker of ['汇流', 'v0.2.0', '全部会话', '256', 'docs/install.md', 'upgrade-v0.2.md', 'node --test', 'MIT']) {
+  for (const marker of ['高级记忆', 'v0.2.0', '全部会话', '256', 'docs/install.md', 'upgrade-v0.2.md', 'node --test', 'MIT']) {
     assert.ok(zhText.includes(marker), `README.zh-CN.md is missing required content: ${marker}`)
   }
   assert.match(enText.replace(/\s+/g, ' '), /not (been )?(installed|verified|executed)/i, 'README must keep the not-executed claims')

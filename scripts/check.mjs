@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — standalone packaging contract check (v0.2.0 implementation, universal memory).
+// Confluence / 高级记忆 — standalone packaging contract check (v0.2.0 implementation, universal memory).
 //
 // Mirrors the packaging checks in test/contract.test.js so CI or a human can run one
 // command without the test runner:
@@ -406,7 +406,7 @@ const zhLocale = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), '
 
 check('manifest: implemented v0.2.0 bundle + declared Web client half', () => {
   assertEquals(packageJson.name, 'dsh-confluence', 'name')
-  assertEquals(packageJson.version, '0.2.0', 'version')
+  assertEquals(packageJson.version, '0.2.1', 'version')
   assertEquals(packageJson.private, true, 'private')
   assertEquals(packageJson.type, 'module', 'type')
   assertEquals(packageJson.main, './index.js', 'main')
@@ -495,7 +495,7 @@ check('index.js: implemented Host entry surface, quiet import, required services
   assertEquals(typeof indexModule.apply, 'function', 'apply export')
   assertEquals(typeof indexModule.applyWithDeps, 'function', 'applyWithDeps export')
   assertEquals(indexModule.default, undefined, 'must use the apply() export form')
-  assertEquals(indexModule.VERSION, '0.2.0', 'VERSION')
+  assertEquals(indexModule.VERSION, '0.2.1', 'VERSION')
   assertEquals(typeof indexModule.DEFAULTS, 'object', 'DEFAULTS export')
   deepEqual(JSON.parse(JSON.stringify(indexModule.DEFAULTS)), DEFAULTS, 'index.js DEFAULTS vs lib/config.js DEFAULTS')
   assert(Array.isArray(indexModule.inject) && indexModule.inject.includes('tools'), "inject must include 'tools'")
@@ -515,7 +515,7 @@ check('client.js: Dynamic ModuleLoader module id, read-only same-origin panel', 
   assert(/name:\s*'sidebar\.panellist'[\s\S]{0,160}id:\s*'confluence'[\s\S]{0,160}order:\s*30/.test(client), 'sidebar entry registration changed')
   assert(/name:\s*'main'[\s\S]{0,160}key:\s*'confluence'/.test(client), 'keyed main page registration changed')
   // v0.2.0: global panel, provenance instead of a workspace switcher.
-  assert(/汇流记忆 \/ Confluence memory/.test(client), 'the panel title must be the global memory title')
+  assert(/高级记忆 \/ Confluence memory/.test(client), 'the panel title must be the global memory title')
   assert(/['"]\/overview['"]/.test(client), 'the panel must call the global overview route')
   assert(/['"]\/entry['"]/.test(client), 'the panel must call the global entry route')
   assert(!/\/workspaces/.test(client), 'the removed /workspaces route must not be called')
@@ -539,7 +539,7 @@ check('offline posture: no network/child-process/DSH imports in index.js or lib/
 
 check('locale: metadata, full inventory and en/zh parity', () => {
   assertEquals(enLocale.meta.title, 'Confluence', 'en meta.title')
-  assertEquals(zhLocale.meta.title, '汇流', 'zh meta.title')
+  assertEquals(zhLocale.meta.title, '高级记忆', 'zh meta.title')
   assertEquals(
     enLocale.meta.description,
     'One shared memory for every session in this profile, fully offline.',
@@ -587,7 +587,7 @@ check('docs: README/install/publishing/status keep the executed-vs-not-executed 
   const en = readFileSync(enPath, 'utf8')
   const zh = readFileSync(zhPath, 'utf8')
   for (const marker of [
-    'Confluence / 汇流',
+    'Confluence / 高级记忆',
     'v0.2.0',
     'v0.1.0',
     'universal',
@@ -610,7 +610,7 @@ check('docs: README/install/publishing/status keep the executed-vs-not-executed 
   ]) {
     assert(en.includes(marker), `README.md missing: ${marker}`)
   }
-  for (const marker of ['汇流', 'v0.2.0', '全部会话', '256', 'docs/install.md', 'upgrade-v0.2.md', 'node --test', 'MIT']) {
+  for (const marker of ['高级记忆', 'v0.2.0', '全部会话', '256', 'docs/install.md', 'upgrade-v0.2.md', 'node --test', 'MIT']) {
     assert(zh.includes(marker), `README.zh-CN.md missing: ${marker}`)
   }
   assert(/not (been )?(installed|verified|executed)/i.test(en), 'README must keep the not-executed claims')

@@ -1,4 +1,4 @@
-# Confluence / 汇流 — documentation index
+# Confluence / 高级记忆 — documentation index
 
 This is the reading map for the repository. The project is a **fully-offline DeepSeek Harness
 plugin** that gives every session in one DSH profile a single shared memory: a passive pulse, an
@@ -6,7 +6,9 @@ explicit board, and on-demand recall. From v0.2.0 the **profile, not the workspa
 boundary**; the binding decision is [ADR 0007](adr/0007-universal-memory-scope.md), which supersedes
 the workspace-scoped parts of [ADR 0001](adr/0001-confluence-architecture.md).
 
-**Status: v0.2.0 (universal memory).** The scope refactor and the independent review's fixes landed
+**Status: v0.2.1 (universal memory; Chinese display name 高级记忆).** v0.2.1 is a display-name patch
+only (formerly 汇流); the scope, store format, tool API and export contract are unchanged from v0.2.0.
+The scope refactor and the independent review's fixes landed
 and the offline evidence is green: on the final tree the offline suite is **291/291 pass**, the
 standalone check is **17/17 pass**, and the offline scratch-profile cross-directory E2E is
 **15/15 PowerShell checks + 12/12 assertions, exit 0** (post-review-fix run
@@ -52,7 +54,7 @@ to avoid.
 
 | ADR | Status | One-line description |
 |---|---|---|
-| [ADR 0001 — Confluence / 汇流 architecture](adr/0001-confluence-architecture.md) | **Accepted** (design phase); workspace-scoped parts **superseded by ADR 0007** | v1 architecture: three-pillar hybrid, workspace identity, append-only sharded journal, six tools, pulse/watermark contract, config, privacy, milestones. |
+| [ADR 0001 — Confluence / 高级记忆 architecture](adr/0001-confluence-architecture.md) | **Accepted** (design phase); workspace-scoped parts **superseded by ADR 0007** | v1 architecture: three-pillar hybrid, workspace identity, append-only sharded journal, six tools, pulse/watermark contract, config, privacy, milestones. |
 | [ADR 0002 — store format and concurrency](adr/0002-store-format-and-concurrency.md) | Round 3 — decision record | Storage/journal format, sharding, merge-on-read and the multi-window concurrency model. |
 | [ADR 0003 — pulse and watermarks](adr/0003-pulse-and-watermarks.md) | Round 3 — decision record | Passive pulse rendering and log-derived watermark mechanics. |
 | [ADR 0004 — privacy and consent](adr/0004-privacy-and-consent.md) | Round 3 — decision record | Privacy, consent boundaries, redaction and opt-out decisions. |

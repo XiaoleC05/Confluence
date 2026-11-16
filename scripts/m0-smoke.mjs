@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — M0 smoke checks that need no DSH boot.
+// Confluence / 高级记忆 — M0 smoke checks that need no DSH boot.
 //
 // This is the harness half of M0: it exercises the load-bearing mechanics that do
 // NOT require a booted Harness or the finished plugin, so the E2E phase starts

@@ -2,8 +2,9 @@
 
 - Owner: **packaging/docs** (`docs-refactor`). This is the coordination record for the build round,
   not a design document; update it whenever the implementation state changes.
-- Last updated: **2026-11-16 (phase 4: independent-review fixes landed, suite re-run 291/291, E2E
-  re-run post-fix, evidence sections updated)** — snapshot from the working tree.
+- Last updated: **2026-11-17 (v0.2.1 display-name patch: Chinese name 汇流 → 高级记忆; no memory,
+  storage, tool or export behaviour changed)**. Prior snapshot: 2026-11-16 (phase 4: independent-review
+  fixes landed, suite re-run 291/291, E2E re-run post-fix, evidence sections updated).
 - Binding contract: [`scope-refactor-delta.md`](scope-refactor-delta.md) (v0.2.0) on top of
   [`implementation-interfaces.md`](implementation-interfaces.md) (v0.1.0 baseline).
   Decision: [`../adr/0007-universal-memory-scope.md`](../adr/0007-universal-memory-scope.md).
@@ -13,10 +14,12 @@
 
 ## 1. Verdict
 
-**v0.2.0 (universal memory) is implemented and its offline evidence is green.** The decision
+**v0.2.1 (universal memory; Chinese display name 高级记忆) is implemented and its offline evidence is
+green.** v0.2.1 changes only the Chinese display name (formerly 汇流); the v0.2.0 scope decision
 (ADR 0007), the binding interface delta, the module changes (global scope, origin provenance, legacy
 read-only merge, global panel, global export), the docs/product reframing, the locale strings and the
-upgrade note are in place. On the final tree (2026-11-16) the offline suite is **291/291 pass**, the
+upgrade note are in place. On the final tree (2026-11-16, unchanged by the display-name patch) the
+offline suite is **291/291 pass**, the
 standalone packaging check is **17/17 pass**, the M0 smoke suite is **14 pass / 0 fail / 1 blocked**,
 and the offline scratch-profile cross-directory E2E is **15/15 PowerShell checks + 12/12 assertion
 checks, exit 0** (run `.tmp/e2e/run-20261116-203730`); all of it is recorded in §5.

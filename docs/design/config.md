@@ -287,7 +287,7 @@ the current session is applied before the write so the control is not a no-op wh
 | bundle patch | `./cordis.patch.yml` (`dsh.bundle.patch`) — ships the complete default object | packaging; `test/contract.test.js` asserts it |
 | client half (M3) | `./client` in `exports` + `files`, and `dsh.client = { platform: 'web', immediately: true, inject: ['@deepseek-ai/dsh-client-ui-sidebar', '@deepseek-ai/dsh-client-ui-layout'] }`; the panel is implemented (global timeline, no workspace switcher) and still awaits a recorded visual check. | `package.json`; `client.js` |
 | locale files | `locale/en.json`, `locale/zh.json`; exported `./locale/*.json`; both carry `meta` + the panel `ui` object (86 keys, `ui.md` §5) | host reference §Display metadata |
-| `meta.title` | en `Confluence`, zh `汇流` | shipped locale files |
+| `meta.title` | en `Confluence`, zh `高级记忆` | shipped locale files |
 | `meta.description` | en `One shared memory for every session in this profile, fully offline.`; zh `本配置文件内所有会话共享同一份记忆，完全离线运行。` | this design; ADR 0007 |
 | icon | `icon.svg` (converging-flow glyph, original artwork, ≤256 KiB), exported as `./icon`; package-root `"icon": "icon.svg"` takes priority | ADR-0001 §13; shipped `icon.svg`; host reference §Display metadata |
 | `engines.dsh` | `>=0.2.2-rc.1` | ADR-0001 §13; shipped `package.json` |

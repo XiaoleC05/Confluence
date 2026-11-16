@@ -12,7 +12,7 @@
 
 ## Context
 
-Confluence / 汇流 will later be merged into the personal offline Go workbench `solo-bench`
+Confluence / 高级记忆 will later be merged into the personal offline Go workbench `solo-bench`
 (single-user CLI, one SQLite file, no web server/port, no model API, no `os/exec` in phase 0, later
 capabilities only as local subprocesses, "不加许可证文件"). It must stay fully offline and must not
 depend on DSH internals or on the plugin running. Confluence v1 is likewise fully offline and already

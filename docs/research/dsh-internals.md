@@ -1,4 +1,4 @@
-# DSH 0.2.2-rc.1 internals — verified facts the Confluence / 汇流 design depends on
+# DSH 0.2.2-rc.1 internals — verified facts the Confluence / 高级记忆 design depends on
 
 Status: research deliverable (Round 1, `dsh-researcher`). Design-only: no plugin was installed,
 no profile state was changed, `solo-bench` and `Crisp` were not modified.

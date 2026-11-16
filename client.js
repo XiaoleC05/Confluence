@@ -1,4 +1,4 @@
-// Confluence / 汇流 — Web panel client half (M3 v0.2.0, read-only).
+// Confluence / 高级记忆 — Web panel client half (M3 v0.2.0, read-only).
 //
 // Universal memory (ADR-0007): one profile-wide timeline for every session. There
 // is no workspace switcher and no workspace-scoped request; a workspace contributes
@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
     const BACKOFF_MS = [5000, 10000, 20000, 30000]
     const KIND_ORDER = ['finding', 'decision', 'gotcha', 'question', 'handoff', 'warning']
     const MAX_LIST = 50
-    const PANEL_TITLE = '汇流记忆 / Confluence memory'
+    const PANEL_TITLE = '高级记忆 / Confluence memory'
     const FALLBACK_SCOPE_LABEL = 'All sessions'
 
     // Panel copy. The shipped locale resources (locale/en.json, locale/zh.json `ui`
@@ -78,7 +78,7 @@ window.__ModuleLoader__.load({
         'entry.resolved': 'Resolved',
       },
       zh: {
-        panel: '汇流',
+        panel: '高级记忆',
         'panel.subtitle': '此配置文件中所有会话共享的记忆。',
         'board.title': '共享笔记',
         'board.subtitle': '此机器上任何会话发布的笔记',

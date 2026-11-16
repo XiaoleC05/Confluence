@@ -1,8 +1,10 @@
-# Confluence / 汇流
+# Confluence / 高级记忆
 
 > **One shared memory for every session on this machine.** / **本机所有会话，共享同一份记忆。**
 
-**Status: v0.2.0 — universal memory.** The scope change is decided in
+**Status: v0.2.1 — universal memory, Chinese display name 高级记忆.** The v0.2.1 patch only renames
+the Chinese display name (formerly 汇流); the memory scope, storage format, tool API and export
+contract are unchanged from v0.2.0. The scope change is decided in
 [ADR 0007](docs/adr/0007-universal-memory-scope.md): the **DSH profile, not the workspace, is the
 memory boundary**, so every session — whatever directory it runs in — reads and writes the same shared
 memory. On the final v0.2.0 tree — after the independent review's fixes — the offline suite is
@@ -15,7 +17,7 @@ reinstall/restart is still not executed, and the panel's visual check is still p
 executed evidence below is historical and stays true for that version. The panel's **rendering has
 still not been visually verified** for either version, and nothing has been published.
 
-Confluence (Chinese name **汇流**, "where streams meet") is a **fully offline** DeepSeek Harness (DSH)
+Confluence (Chinese name **高级记忆**, "advanced memory") is a **fully offline** DeepSeek Harness (DSH)
 plugin that gives every session in your profile one long-conversation shared memory: a passive
 **pulse** in the prompt, a durable **board** of shared notes, and an explicit, bounded **recall** over
 earlier sessions. No server, no network calls, no extra port, no child processes and no model calls at
@@ -57,7 +59,7 @@ labels on a memory entry, never a partition, filter, or permission boundary.
 | **Board** — shared memory | Append-only JSONL journal in **one global scope** (`ws_0000000000000000`, label "All sessions") with typed notes (`finding`, `decision`, `gotcha`, `question`, `handoff`, `warning`), threads, resolution and tombstones. Each entry carries an optional `origin` (the workspace label it was written from) as provenance only. Implemented by `lib/store.js` + `lib/board.js` + `lib/facade.js`. |
 | **Ledger + recall** | Metadata-only live session ledger and presence heartbeats for **all** sessions in the profile (no prompts/tool text), plus explicit literal recall over earlier sessions anywhere on this machine through `ctx.sessionQuery` exact reads. `privacy.privateSessions` still removes a session completely. Implemented by `lib/ledger.js`, `lib/presence.js`, `lib/recall.js`. |
 | **Six model tools** | `confluence_board`, `confluence_post`, `confluence_read`, `confluence_search`, `confluence_reply`, `confluence_recall` (`lib/tools.js`). Wording is universal: none says "this workspace"; recall says "all earlier sessions on this machine". |
-| **Read-only Web panel** | Left-rail entry + keyed main page (`client.js`), title **"汇流记忆 / Confluence memory"**: one global timeline, kind/tag filters, search, entry detail with thread, open items, live peers, and a provenance chip showing the workspace label an entry came from. **No workspace switcher.** Data comes from read-only same-origin routes on the existing DSH web server (`lib/hostui.js`) — `ping`, `overview`, `entry`; no `host.call`, no iframe, no push channel. |
+| **Read-only Web panel** | Left-rail entry + keyed main page (`client.js`), title **"高级记忆 / Confluence memory"**: one global timeline, kind/tag filters, search, entry detail with thread, open items, live peers, and a provenance chip showing the workspace label an entry came from. **No workspace switcher.** Data comes from read-only same-origin routes on the existing DSH web server (`lib/hostui.js`) — `ping`, `overview`, `entry`; no `host.call`, no iframe, no push channel. |
 | **Export (opt-in)** | `confluence.memories/v1` unchanged for the consumer: the manifest gains `scope:"global"` and reports the global `wsKey`/name, every record uses the global key, and an additive `origin` carries provenance. CLI drops `--workspace`. |
 
 The user-visible promise: **"Your sessions remember together."**
@@ -176,7 +178,7 @@ Start with the [documentation index](docs/README.md) for the full map and readin
 
 **Decisions and context**
 
-- [ADR 0001 — Confluence / 汇流 architecture](docs/adr/0001-confluence-architecture.md)
+- [ADR 0001 — Confluence / 高级记忆 architecture](docs/adr/0001-confluence-architecture.md)
 - [ADR 0007 — Universal memory scope](docs/adr/0007-universal-memory-scope.md) — **binding for
   v0.2.0**: the profile is the memory boundary; supersedes the workspace-scoped parts of ADR 0001
 - [ADR 0002 — store format and concurrency](docs/adr/0002-store-format-and-concurrency.md) ·
@@ -395,7 +397,7 @@ never written.
 
 ## License
 
-[MIT](LICENSE) © 2026 XiaoleC05 and Confluence / 汇流 contributors.
+[MIT](LICENSE) © 2026 XiaoleC05 and Confluence / 高级记忆 contributors.
 
 ## Links
 

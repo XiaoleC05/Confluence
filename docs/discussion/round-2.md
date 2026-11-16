@@ -144,7 +144,7 @@ redacted, absolute-path-free, excludes raw ops (or marks `deleted`), and is the 
 
 ## 5. Consequence
 
-The final design ("Confluence / 汇流 v1") is a three-pillar hybrid with A's risk posture and B's
+The final design ("Confluence / 高级记忆 v1") is a three-pillar hybrid with A's risk posture and B's
 storage/watermark rigour, plus B's record schema reserved for v2. It is documented in
 [`../adr/0001-confluence-architecture.md`](../adr/0001-confluence-architecture.md); round 3
 produces the detailed design documents, execution plan, repository packaging and an independent

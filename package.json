@@ -1,8 +1,8 @@
 {
   "name": "dsh-confluence",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
-  "description": "Fully-offline DeepSeek Harness plugin that gives every session one universal shared memory (Confluence / 汇流): a passive pulse, a durable shared board, on-demand recall, a read-only panel and an opt-in export — independent of the working directory.",
+  "description": "Fully-offline DeepSeek Harness plugin that gives every session one universal shared memory (Confluence / 高级记忆): a passive pulse, a durable shared board, on-demand recall, a read-only panel and an opt-in export — independent of the working directory.",
   "author": "XiaoleC05",
   "repository": {
     "type": "git",

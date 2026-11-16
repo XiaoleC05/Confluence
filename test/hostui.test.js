@@ -1,4 +1,4 @@
-// Confluence / 汇流 — v0.2.0 tests: Host UI routes (lib/hostui.js) and the Web panel
+// Confluence / 高级记忆 — v0.2.0 tests: Host UI routes (lib/hostui.js) and the Web panel
 // client half (client.js), both universal-memory (ADR-0007) read-only surfaces.
 // Dependency-free: node:test + node:assert/strict + node:vm.
 //
@@ -865,7 +865,7 @@ test('UI-02 client.js is offline, read-only, global-scope only and dependency-fr
   assert.equal(source.includes('/confluence/panel/workspaces'), false)
   assert.doesNotMatch(source, /\bws\s*:/)
   // Global rendering contract: fixed bilingual title, host scope label, provenance chip.
-  assert.equal(source.includes("PANEL_TITLE = '汇流记忆 / Confluence memory'"), true)
+  assert.equal(source.includes("PANEL_TITLE = '高级记忆 / Confluence memory'"), true)
   assert.equal(source.includes('scope.label'), true)
   assert.equal(source.includes('cf-workspace'), true)
   assert.equal(source.includes('entry.workspaceLabel'), true)
@@ -971,7 +971,7 @@ test('UI-05 the registered page renders the global timeline chrome (no workspace
   assert.equal(tree.type, 'element')
   assert.equal(tree.args[0], 'section')
   const serialized = JSON.stringify(tree)
-  assert.equal(serialized.includes('汇流记忆 / Confluence memory'), true)
+  assert.equal(serialized.includes('高级记忆 / Confluence memory'), true)
   assert.equal(serialized.includes('T:panel.subtitle'), true)
   assert.equal(serialized.includes('T:search.label'), true)
   assert.equal(serialized.includes('T:questions.open'), true)

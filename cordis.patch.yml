@@ -1,4 +1,4 @@
-# Confluence / 汇流 — bundle patch (v0.2.0 universal memory)
+# Confluence / 高级记忆 — bundle patch (v0.2.0 universal memory)
 #
 # Installing this bundle inserts exactly one Loader row, `confluence`, whose
 # `config` is the complete v1 default configuration. The row mounts the plain

@@ -1,4 +1,4 @@
-# Confluence / 汇流 — example user overrides (v0.2.0, universal memory)
+# Confluence / 高级记忆 — example user overrides (v0.2.0, universal memory)
 #
 # These are EXAMPLES for a user's own profile layer
 # ($DSH_HOME/profiles/<profile>/cordis.patch.yml). Nothing here is loaded by the

@@ -1,4 +1,4 @@
-# ADR 0001 — Confluence / 汇流 architecture (workspace memory for DSH)
+# ADR 0001 — Confluence / 高级记忆 architecture (workspace memory for DSH)
 
 - Status: **Accepted** (design phase; implementation starts at milestone M1)
 - Date: 2026-11-13
@@ -22,7 +22,7 @@ immutable snapshot, user-triggered), or enabling the experimental `session_*` se
 default, hidden, and FTS-based; host FTS is disabled in this profile). The result is repeated
 investigation, lost decisions, expensive handoffs, and duplicate work.
 
-**Confluence / 汇流** is the missing ambient workspace memory layer: agents no longer have to be
+**Confluence / 高级记忆** is the missing ambient workspace memory layer: agents no longer have to be
 told to use documents; every session in the same workspace automatically sees what peers shared,
 what the workspace knows, and what recently happened — locally, offline, and bounded.
 

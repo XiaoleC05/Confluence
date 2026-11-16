@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "汇流",
+    "title": "高级记忆",
     "description": "本配置文件内所有会话共享同一份记忆，完全离线运行。"
   },
   "ui": {
-    "panel": "汇流",
+    "panel": "高级记忆",
     "board.title": "共享笔记",
     "board.subtitle": "此机器上任何会话发布的笔记",
     "board.empty": "还没有共享笔记。会话可以用 confluence_post 发布笔记。",

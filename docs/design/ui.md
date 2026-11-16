@@ -9,7 +9,7 @@
   [`../plan/m0-spikes.md`](../plan/m0-spikes.md) §8 (spike S6), ADR-0001 §12.
 
 > **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md), delta
-> §7).** The panel becomes **one global timeline**, titled "汇流记忆 / Confluence memory": entries from
+> §7).** The panel becomes **one global timeline**, titled "高级记忆 / Confluence memory": entries from
 > every session, a kind filter plus free-text search (search matches titles/bodies/tags; no separate
 > tag facet in v0.2.0), entry detail + thread, live peers, and a **provenance chip**
 > showing the originating workspace label when the host supplies one. **There is no workspace
@@ -62,9 +62,9 @@ a second app root, or `conversation.composer.dock` as a panel.
 
 ```text
 ┌ left rail ─┬───────────────────────────────────────────────────────────────────────┐
-│ ◇ Conflu-  │  汇流记忆 / Confluence memory                      2 here   [⟳] [Back]   │
+│ ◇ Conflu-  │  高级记忆 / Confluence memory                      2 here   [⟳] [Back]   │
 │   ence     │  All sessions · shared memory · updated 12:03:44                       │
-│  (汇流)    ├───────────────────────────────────────────────────────────────────────┤
+│  (高级记忆)    ├───────────────────────────────────────────────────────────────────────┤
 │            │  [banner: storage degraded / partial records / private]               │
 │            │  [Search shared memory…] All Finding Decision Gotcha Question Handoff │
 │            │  Warning  [Unread only]                          [Mark all read]      │
@@ -86,7 +86,7 @@ a second app root, or `conversation.composer.dock` as a panel.
 
 ```text
 ConfluencePage                    <section aria-labelledby="cf-title">; .cf-page
-├─ PageHeader                     h1#cf-title, "汇流记忆" chip, scope row (All sessions · updated)
+├─ PageHeader                     h1#cf-title, "高级记忆" chip, scope row (All sessions · updated)
 │  ├─ PresenceStrip               role="status": dot + "{n} active now" + ≤2 titles
 │  └─ HeaderActions               Refresh · BackToChat        (no workspace switcher)
 ├─ StatusBanners                  one banner per active state (§4)
@@ -384,7 +384,7 @@ disabled elements use `opacity: .6`, not a new color. Light/dark follows the hos
 
 Visual language (reference: Plugin Manager list density + Crisp page chrome, no screenshot needed):
 13 px body, 12 px metadata, 22 px semibold page title, 32 px controls, 8–12 px radii, 10–16 px row
-padding, 1 px `border-l1` separators; header title with a small "汇流" chip, presence as a bordered
+padding, 1 px `border-l1` separators; header title with a small "高级记忆" chip, presence as a bordered
 pill; timeline rows with an uppercase 11 px kind pill, semibold one-line title, metadata line, unread
 dot, and a 2 px `brand-primary` left border + `bg-layer-2` when selected; detail column 420 px sticky,
 quiet untrusted inset banner, 13 px/1.6 pre-wrap body, 12 px provenance with monospace id/seq, replies

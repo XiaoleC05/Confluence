@@ -120,7 +120,7 @@ appear as user-facing words.
 | **Thread** | 串 | A note plus the notes whose `reply_to` points at it (one level). |
 | **Presence** | 在场 | Which sessions are alive in the channel now, running/idle, their title, their latest note. Heartbeat-derived; stale after TTL. |
 | **Watermark** | 水位 | Per-session last board position already present in a committed prompt. Derived from the session log (not a separate store). Drives NEW markers. |
-| **Digest** | 汇流摘要 | The bounded `<confluence-board>` block injected into every prompt: NEW notes, open counts, presence count, fixed untrusted-data warning. |
+| **Digest** | 高级记忆摘要 | The bounded `<confluence-board>` block injected into every prompt: NEW notes, open counts, presence count, fixed untrusted-data warning. |
 
 Kinds (closed vocabulary of seven): `finding`, `decision`, `constraint`, `question`, `handoff`,
 `status`, `note`; unknown values read as `note` (forward compatibility). Lifecycle: `active` →

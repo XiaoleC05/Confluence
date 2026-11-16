@@ -1,4 +1,4 @@
-# Confluence / 汇流 — Team brief (Round 1)
+# Confluence / 高级记忆 — Team brief (Round 1)
 
 Status: shared bootstrap note for all teammates. Maintained by the Lead. Do not edit;
 if a fact here is wrong, report it to the Lead instead of silently diverging.
@@ -8,7 +8,7 @@ if a fact here is wrong, report it to the Lead instead of silently diverging.
 Design a DeepSeek Harness (DSH) plugin that removes a real pain point: **sessions in the
 same workspace cannot share information**. Today the only workaround is to ask an agent
 explicitly to write/read documents or files. The plugin ("Confluence", Chinese name
-"汇流") must make workspace-scoped cross-session information sharing a first-class,
+"高级记忆") must make workspace-scoped cross-session information sharing a first-class,
 mostly-automatic capability.
 
 User requirements:
@@ -17,7 +17,7 @@ User requirements:
    produce the complete design. **This phase is design + a project-shaped repository**,
    not a production implementation. Do not install anything into the DSH profile.
 2. The plugin must be a **complete project**: English name **Confluence**, Chinese name
-   **汇流**, documentation, GitHub repository `https://github.com/XiaoleC05/Confluence.git`.
+   **高级记忆**, documentation, GitHub repository `https://github.com/XiaoleC05/Confluence.git`.
 3. **Fully offline, no server**: no network calls at runtime, no extra listening port, no
    external service/database. It may only use what DSH itself provides locally.
 4. The plugin will **later be merged into `D:\05_Code\solo-bench`** (a personal offline Go

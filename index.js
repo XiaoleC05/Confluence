@@ -1,4 +1,4 @@
-// Confluence / 汇流 — Host plugin entry (v0.2.0 universal memory scope).
+// Confluence / 高级记忆 — Host plugin entry (v0.2.0 universal memory scope).
 //
 // Wires the modules onto the live Cordis context. v0.2.0 scope decision
 // (ADR-0007): memory is UNIVERSAL per DSH profile — every session, in every
@@ -48,7 +48,7 @@ export const inject = ['tools']
 export { DEFAULTS }
 
 /** Plugin version reported by the panel ping route. */
-export const VERSION = '0.2.0'
+export const VERSION = '0.2.1'
 
 /**
  * Host plugin entry.

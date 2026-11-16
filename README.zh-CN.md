@@ -1,9 +1,11 @@
-# Confluence / 汇流
+# Confluence / 高级记忆
 
 > **本机所有会话，共享同一份记忆。** / **One shared memory for every session on this machine.**
 
-**状态：v0.2.0——通用共享记忆。** 作用域变更由 [ADR 0007](docs/adr/0007-universal-memory-scope.md)
-决定：**记忆边界是 DSH profile，而不是工作区**，因此无论会话在哪个目录运行，都读写同一份共享记忆。
+**状态：v0.2.1——通用共享记忆，中文名「高级记忆」。** v0.2.1 仅把中文名从「汇流」改为「高级记忆」；
+记忆作用域、存储格式、工具 API 与导出契约均与 v0.2.0 相同。作用域变更由
+[ADR 0007](docs/adr/0007-universal-memory-scope.md) 决定：**记忆边界是 DSH profile，而不是工作区**，
+因此无论会话在哪个目录运行，都读写同一份共享记忆。
 v0.2.0 最终代码树（含独立评审修复）上的离线套件 **291/291 通过**、打包契约 **17/17 通过**，离线
 临时 profile 的 **跨目录 E2E 已全绿：15/15 项 PowerShell 检查 + 12/12 项断言检查，退出码 0**（修复后
 运行目录 `.tmp/e2e/run-20261116-203730`，2026-11-16；完整证据见
@@ -12,7 +14,7 @@ v0.2.0 最终代码树（含独立评审修复）上的离线套件 **291/291 �
 仍待执行。下方 v0.1.0 的"已执行"证据属于历史，对该版本仍然成立。面板渲染**仍未经过
 可视化验证**（两个版本都是），也尚未发布任何东西。
 
-Confluence（中文名 **汇流**，"众流汇合之处"）是一个**完全离线**的 DeepSeek Harness（DSH）插件，为
+Confluence（中文名 **高级记忆**，即 advanced memory）是一个**完全离线**的 DeepSeek Harness（DSH）插件，为
 profile 内的每个会话提供同一份长对话共享记忆：提示词中的被动脉冲、持久共享看板，以及对早前会话的显式、
 有界回溯。运行时不联网、不启动服务器、不新增监听端口、不启动子进程、不调用模型。
 
@@ -49,7 +51,7 @@ v0.2.0 实现了这一点：**每个 profile 一个记忆空间。** 目录和�
 | **看板（Board）** — 共享记忆 | 在**单一全局作用域**（`ws_0000000000000000`，名称 "All sessions"）内的仅追加 JSONL 日志，支持类型化笔记（`finding`、`decision`、`gotcha`、`question`、`handoff`、`warning`）、线程、解决与墓碑。每个条目带可选的 `origin`（写入时所在工作区的名称）作为来源标注。由 `lib/store.js` + `lib/board.js` + `lib/facade.js` 实现。 |
 | **账本 + 回溯** | 仅元数据的实时会话账本与 presence 心跳，覆盖 profile 内**所有**会话（不含提示词/工具文本），以及对本机任意早前会话的显式字面回溯（通过 `ctx.sessionQuery` 精确读取）。`privacy.privateSessions` 仍能把某个会话完全排除。由 `lib/ledger.js`、`lib/presence.js`、`lib/recall.js` 实现。 |
 | **六个模型工具** | `confluence_board`、`confluence_post`、`confluence_read`、`confluence_search`、`confluence_reply`、`confluence_recall`（`lib/tools.js`）。文案已统一：没有任何工具再说"this workspace"；回溯描述为"本机所有早前会话"。 |
-| **只读 Web 面板** | 左侧栏入口 + 带 key 的 main 页面（`client.js`），标题 **"汇流记忆 / Confluence memory"**：单一全局时间线、类型/标签筛选、搜索、含线程的条目详情、未完成项、在线同伴，以及显示条目来源工作区名称的 provenance 芯片。**没有工作区切换器。** 数据来自注册在现有 DSH Web 服务器上的只读同源路由（`lib/hostui.js`）——`ping`、`overview`、`entry`；不使用 `host.call`、无 iframe、无推送通道。 |
+| **只读 Web 面板** | 左侧栏入口 + 带 key 的 main 页面（`client.js`），标题 **"高级记忆 / Confluence memory"**：单一全局时间线、类型/标签筛选、搜索、含线程的条目详情、未完成项、在线同伴，以及显示条目来源工作区名称的 provenance 芯片。**没有工作区切换器。** 数据来自注册在现有 DSH Web 服务器上的只读同源路由（`lib/hostui.js`）——`ping`、`overview`、`entry`；不使用 `host.call`、无 iframe、无推送通道。 |
 | **导出（需显式启用）** | 消费端契约 `confluence.memories/v1` 不变：manifest 增加 `scope:"global"` 并报告全局 `wsKey`/名称，每条记录使用全局键，新增可加字段 `origin` 承载来源。CLI 去掉 `--workspace`。 |
 
 对用户的承诺：**"你的会话一起记住。"**
@@ -164,7 +166,7 @@ D:\05_Code\Confluence\
 
 **决策与背景**
 
-- [ADR 0001 — Confluence / 汇流 架构](docs/adr/0001-confluence-architecture.md)
+- [ADR 0001 — Confluence / 高级记忆 架构](docs/adr/0001-confluence-architecture.md)
 - [ADR 0007 — 通用记忆作用域](docs/adr/0007-universal-memory-scope.md)——**v0.2.0 的约束性决策**：
   profile 是记忆边界；取代 ADR 0001 中与工作区作用域相关的部分
 - [ADR 0002 — 存储格式与并发](docs/adr/0002-store-format-and-concurrency.md) ·
@@ -365,7 +367,7 @@ v0.2.0 还额外未执行：真实 desktop profile 的重装/重启，以及任�
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 XiaoleC05 与 Confluence / 汇流 贡献者。
+[MIT](LICENSE) © 2026 XiaoleC05 与 Confluence / 高级记忆 贡献者。
 
 ## 链接
 

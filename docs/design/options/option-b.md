@@ -1,4 +1,4 @@
-# Confluence (汇流) — Option B: Living workspace memory
+# Confluence (高级记忆) — Option B: Living workspace memory
 
 Status: Round-1 design proposal, owner `architect-b`. Design only — no code, no profile changes.
 Target: DeepSeek Harness Desktop `0.2.2-rc.1`, profile `desktop`, Windows 11, fully offline.
@@ -1435,7 +1435,7 @@ modified; Confluence will stop surfacing this content"). This is an honest limit
 
 | Surface | Priority | Slot / mechanism |
 |---|---|---|
-| First-level sidebar page "Confluence / 汇流" (timeline, search, threads, presence, settings) | P0 | verified pattern: page slot `main` (pass `key`) + left-rail entry slot `sidebar.panellist` (`id/order/label`), opened via `ctx.layout`; `ctx.layout.selectPanel(null)` returns to chat (`dsh-internals.md §6.2`, Crisp/dsh-context). Props must be re-verified on a connected page (client inspect timed out) |
+| First-level sidebar page "Confluence / 高级记忆" (timeline, search, threads, presence, settings) | P0 | verified pattern: page slot `main` (pass `key`) + left-rail entry slot `sidebar.panellist` (`id/order/label`), opened via `ctx.layout`; `ctx.layout.selectPanel(null)` returns to chat (`dsh-internals.md §6.2`, Crisp/dsh-context). Props must be re-verified on a connected page (client inspect timed out) |
 | Right-sidebar pane tab (live timeline beside chat) | P0 fallback | verified `sidebar.right.pane.tab` + `.title` slots (F13) |
 | Session tab (per-session memory view) | P1 | dsh-context precedent (`README:17-18`); slot id `HYPOTHESIS:` |
 | `/confluence` slash command (quick digest, private toggle, forget, open panel) | P0 | `ctx.commands.register` + `ctx.remote.commands.execute` (F15) |
@@ -1507,7 +1507,7 @@ Read-only vs writable exposure:
   client dictionaries are registered with `ctx.locale.register(ns, {en, zh})` and read through
   `ctx.locale.bind(ns)` (`dsh-internals.md §6.4`; Crisp `client.js:518-519`); no hardcoded English in
   components.
-- English name **Confluence**, Chinese **汇流**; `locale/zh.json`: `meta.title: "汇流"`.
+- English name **Confluence**, Chinese **高级记忆**; `locale/zh.json`: `meta.title: "高级记忆"`.
 - Icon: original SVG (a converging-flow glyph), exported `./icon`, ≤ 256 KiB, no absolute paths (host
   plugin display checklist, `host-plugin.md:29-55`).
 - Styling: only `--dsw-alias-*` theme tokens; no literal colors except the icon; copy spacing/row

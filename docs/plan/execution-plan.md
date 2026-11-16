@@ -1,4 +1,4 @@
-# Confluence / 汇流 — execution plan (M0 → M4, v2 gate)
+# Confluence / 高级记忆 — execution plan (M0 → M4, v2 gate)
 
 Status: **execution plan for the accepted architecture** in
 [ADR 0001](../adr/0001-confluence-architecture.md). Still the design-only phase: nothing is installed

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confluence / 汇流 — test-harness child writer for M0-S4 concurrency evidence.
+// Confluence / 高级记忆 — test-harness child writer for M0-S4 concurrency evidence.
 //
 // The PLUGIN never spawns processes; only the harness does. This helper writes
 // one shard from one process using the normative primitive from ADR-0001 E10:
