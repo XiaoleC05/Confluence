@@ -1,5 +1,5 @@
 {
-  "//": "Deterministic E2E scenario: the first task request asks for one confluence_post tool call, the follow-up request closes the turn with text. Used by the pulse scenario (writer session). The tool input satisfies docs/design/tool-api.md confluence_post: kind/title/body/tags.",
+  "//": "Deterministic E2E scenario for the writer session (workspace A). The title utility gets a short title, the follow-up after the tool result closes the turn with text; the first task request asks for one confluence_post tool call. Input satisfies docs/design/tool-api.md confluence_post: kind/title/body/tags. The note is shared memory (v0.2.0 universal scope), so a session in a DIFFERENT directory must see it.",
   "default": { "text": "Mock default answer (no matching scenario rule)." },
   "responses": [
     {
@@ -15,8 +15,8 @@
         "name": "confluence_post",
         "input": {
           "kind": "gotcha",
-          "title": "E2E harness gotcha",
-          "body": "Synthetic workspace gotcha written by the offline Confluence E2E harness. Safe to delete.",
+          "title": "Cross-directory harness gotcha",
+          "body": "Synthetic shared-memory gotcha written by the offline Confluence cross-directory E2E harness. Safe to delete.",
           "tags": ["e2e", "fixture"]
         }
       }

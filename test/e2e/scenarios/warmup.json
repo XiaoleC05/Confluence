@@ -1,0 +1,13 @@
+{
+  "//": "Throwaway warm-up session run once right after the local bundle is installed into a fresh scratch profile. DSH activation is async: the very first headless session after an install can build its first request before the plugin has attached (observed: request/header #1 offered 0 confluence tools, the next step offered all 6). The warm-up absorbs that cold start so the acceptance sessions measure the product contract, not activation timing. Distinct final text so it is never confused with an acceptance session.",
+  "default": { "text": "Warm-up session completed; no tools were needed." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Warm-up session"
+    },
+    {
+      "text": "Warm-up session completed; no tools were needed."
+    }
+  ]
+}

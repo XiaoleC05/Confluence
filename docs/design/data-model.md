@@ -15,6 +15,18 @@ Record lines are appended to per-writer JSONL shards; the file-level contract, e
 and merge algorithm are in [`store-format.md`](store-format.md). Everything here is about *what* a
 line means.
 
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md)).**
+> Records are written to **one global scope** (`ws_0000000000000000`, label "All sessions"); the `ws`
+> envelope field carries that constant for new records, while legacy v0.1.0 records keep their
+> original per-workspace key and are merged read-only. Workspace data becomes provenance: an entry or
+> `session` row may carry a top-level
+> `origin: { workspaceKey?, workspaceLabel? }` object (labels are basenames only; never absolute
+> paths) — distinct from the pre-existing `author.origin` / `record.origin` enum (`agent`/`user`).
+> `MAX_LEDGER_SESSIONS` is fed by the renamed config key `ledger.maxSessions`; the global board cap is
+> still named `maxEntriesPerWorkspace` (config key kept, meaning global). Cross-workspace ids are no
+> longer special: every id lives in the one board. Binding delta:
+> [`../plan/scope-refactor-delta.md`](../plan/scope-refactor-delta.md).
+
 ## 1. Envelope
 
 Every journal line is exactly one JSON object with these envelope fields
@@ -25,7 +37,7 @@ Every journal line is exactly one JSON object with these envelope fields
 | `v` | integer | yes | Per-line record schema version. Exactly `1` in v1. |
 | `type` | string | yes | One of `entry`, `session`, `tombstone`, or reserved `signal`, `watermark`. |
 | `id` | string | yes for emitted types | Stable identity; see §2. |
-| `ws` | string | yes | Workspace key `ws_<16 lowercase hex>`; must equal the directory key. |
+| `ws` | string | yes | Workspace key `ws_<16 lowercase hex>`; must equal the directory key. v0.2.0 writes the global constant `ws_0000000000000000`; legacy merged records keep their original key. |
 | `seq` | string | yes | 26-char Crockford base32 ULID, uppercase; the total order key (§2.3). |
 | `ts` | string | yes | ISO-8601 UTC with milliseconds and `Z`: `YYYY-MM-DDTHH:MM:SS.sssZ`. |
 | … | any | per type | Type-specific fields, §4. Unknown fields are preserved/ignored (§8). |
@@ -40,21 +52,30 @@ knows the type, validate the line without consulting any other file.
 
 ## 2. Identifiers
 
-### 2.1 Workspace key `wsKey` (ADR 0001 §5)
+### 2.1 Scope key and origin `wsKey` (ADR 0001 §5 → ADR 0007 §2)
+
+v0.2.0 has **one scope key** and keeps the v1 derivation only for provenance labels and legacy reads:
 
 ```text
-canonicalPath = realpath(session.header.cwd)              # fs.realpath, one spelling
+GLOBAL_SCOPE_KEY   = "ws_0000000000000000"        # reserved; never a real workspace key
+GLOBAL_SCOPE_LABEL = "All sessions"
+
+# origin (provenance only, best effort; may be absent and never blocks memory)
+canonicalPath = realpath(session.header.cwd)               # fs.realpath, one spelling
 on win32:      canonicalPath = canonicalPath.toLowerCase() # case-insensitive filesystem
-wsKey         = "ws_" + lowerHex(sha256(utf8(canonicalPath))).slice(0, 16)
+workspaceKey   = "ws_" + lowerHex(sha256(utf8(canonicalPath))).slice(0, 16)
+workspaceLabel = basename(canonicalPath)                   # never the full path
+origin         = { workspaceKey, workspaceLabel }
 ```
 
-- 64-bit key space; collisions are detectable because `MANIFEST.v1.json` stores `workspace.key`
-  and `workspace.canonicalPath` together (§4.7) and because the resolver keeps an in-process
-  `wsKey → canonicalPath` map.
-- The key is frozen at first observation per session for the session's lifetime; it never follows a
-  later `cd`. The effective directory is recorded as ledger metadata only (ADR 0001 R1).
-- Missing `header.cwd`: fall back once to `ctx.workingDirectory.get(session)` at session start. No
-  key → the session gets no Confluence tools and no pulse text (ADR 0001 §5).
+- New records use `GLOBAL_SCOPE_KEY` as `ws`. Records from v0.1.0 journals keep their original
+  per-workspace key and are merged read-only; `origin.workspaceLabel` for those is derived at fold time
+  from the legacy `MANIFEST.v1.json` path (basename), never from the raw record.
+- `origin` is optional on entries, `session` rows and live-session descriptors. A missing origin is
+  valid: the record is global memory that simply has no workspace hint.
+- v0.1.0 froze a workspace key per session and used it as a partition/filter. v0.2.0 resolves the
+  origin best-effort (realpath failure → no origin) and **never** scopes a read or write by it; the
+  historical freeze/collision rules below belong to the legacy resolver kept for v0.1.0 data only.
 
 ### 2.2 Record ids
 
@@ -89,7 +110,7 @@ structural hint. The export reuses board ids unchanged, so `cnf_…` ids appear 
   visible to `confluence_board`/`confluence_search`; it can miss one pulse headline. A lost *note*
   is never possible (discoverability is not cursor-filtered; ADR 0001 §8.1).
 - Cursor semantics use strings only, never a clock: `null` means "no cursor yet" (a fresh session),
-  `"0"` is the delivered empty-board sentinel (the welcome snapshot of an empty workspace), and a
+  `"0"` is the delivered empty-board sentinel (the welcome snapshot of an empty board), and a
   26-char ULID is a real board cursor. Lexicographic comparison gives `null < "0" < every ULID`;
   "new since" means `record.seq > cursor` lexicographically. Readers accept any
   `[0-9A-Za-z]{1,26}` token from a marker/cursor; writers emit exactly 26 characters for real
@@ -140,9 +161,10 @@ specially. `status` stored on a `session` row is the status observed at write ti
 | `body` | string | no | ≤8192 UTF-8 bytes (`store.maxBodyBytes`); newlines allowed; redacted before append. |
 | `tags` | string[] | no | ≤8 items, each 1–32 chars `^[a-z0-9][a-z0-9_-]*$`; lowercased/deduped by the writer. |
 | `files` | string[] | no | ≤8 workspace-relative paths, each 1–240 chars, `/` separators; no drive letter, no UNC, no leading `/`, no `..` segment, no NUL; deny-pattern checked (`privacy.denyPathPatterns`). |
-| `replyTo` | string | no | An existing `entry` id in the same workspace, not tombstoned, and not itself a reply (threads are one level deep; a reply to a reply is re-targeted to the root by the writer). Mutually exclusive with `replyTo`-cycle. |
+| `origin` (v0.2.0) | object | no | Provenance of the writing session: `{ workspaceKey?, workspaceLabel? }`, label = basename only. Optional; never used as a filter. Distinct from the author enum below. |
+| `replyTo` | string | no | An existing `entry` id in shared memory, not tombstoned, and not itself a reply (threads are one level deep; a reply to a reply is re-targeted to the root by the writer). Mutually exclusive with `replyTo`-cycle. |
 | `resolves` | boolean | no | Only on a reply (`replyTo` present). `true` resolves the root question/handoff; `false` reopens it (last marker by `seq` wins, §5.2). |
-| `supersedes` | string | no | An existing non-reply `entry` id in the same workspace. Marks the target `superseded` (§5.3); the new entry is independent and remains active. |
+| `supersedes` | string | no | An existing non-reply `entry` id in shared memory. Marks the target `superseded` (§5.3); the new entry is independent and remains active. |
 | `sessionId` | string | yes | Author session id (for `origin = "user"` this is the invoking session, or the literal `user` — never anonymous to the reader, see §5.5). |
 | `sessionTitle` | string | no | Snapshot of the author's title at post time, ≤160 chars, redacted. Missing if unknown; readers fall back to the ledger title or `"a session"`. |
 | `redactions` | integer | no | Count of redaction replacements applied before append (0 omitted). Never content. |
@@ -165,19 +187,20 @@ the field allow-list test, §8.3).
 | `effectiveDir` | string | no | Absolute canonical directory the session was actually working in when it differed from the workspace path; recorded once per change. Never exported, never in the pulse. |
 | `files` | string[] | no | ≤8 distinct workspace-relative paths observed in write/edit-style tool calls; cumulative, deduped, oldest dropped. Always rendered with the phrase "files seen in tool calls (partial)". |
 | `parentSession` | string | no | Fork lineage from `header.parentSession`. |
-| `origin` | string | no | `subagent` when `header.origin === 'subagent'`. |
+| `origin` | object | no | v0.2.0 provenance: `{ workspaceKey?, workspaceLabel? }` (basename label). Replaces the v1 `subagent` string marker; legacy rows carrying a string are normalized to no origin. Never scoped/filtered on. |
 | `redactions` | integer | no | As §4.1. |
 
 Exactly one effective row per session id: readers keep the row with the greatest `seq` (last-wins,
-§7.2). A session row's `ws` is frozen; a session id never appears under two workspace keys
-(invariant I6, enforced by the resolver, not by cross-directory scanning).
+§7.2). All rows live in the global scope; a session may write a row with no origin at all (missing
+directory is not a failure). Legacy v0.1.0 rows keep their original `ws` and gain a display label from
+their old manifest.
 
 ### 4.3 `tombstone` — deletion marker (ADR 0001 §6/§11)
 
 | Field | Type | Req | Rule |
 |---|---|---|---|
 | `v`,`type`,`id`,`ws`,`seq`,`ts` | — | yes | §1; `type = "tombstone"`. |
-| `targetId` | string | yes | An `entry` id in the same workspace. |
+| `targetId` | string | yes | An `entry` id in the global board (legacy merged ids qualify too). |
 | `targetType` | string | yes | `"entry"` in v1 (reserved for future `"session"`/`"workspace"`). |
 | `reason` | string | yes | `"user"` (M4 explicit action); `"retention"` reserved for compaction policy. |
 | `origin` | string | yes | `"user"`. |
@@ -221,38 +244,39 @@ One file per writer: `presence/<writerId>.json`, overwritten atomically (temp + 
 record type, not part of the merge/order space, never exported.
 
 ```json
-{"v":1,"ws":"ws_3f9a1c7e2b4d8061","writerId":"24188-9f3ac210","pid":24188,
- "plugin":{"name":"dsh-confluence","version":"0.1.0"},
- "updatedAt":"2026-11-13T02:41:07.512Z",
- "sessions":["session-23da4b81-7f0e-4c2a-9d55-1e8f0a6b7c91"]}
+{"v":1,"ws":"ws_0000000000000000","writerId":"24188-9f3ac210","pid":24188,
+ "plugin":{"name":"dsh-confluence","version":"0.2.0"},
+ "updatedAt":"2026-11-16T02:41:07.512Z",
+ "sessions":["session-23da4b81-7f0e-4c2a-9d55-1e8f0a6b7c91"],
+ "sessionsMeta":[{"sessionId":"session-23da…","title":"Auth work","workspaceLabel":"solo-bench"}]}
 ```
 
-Rules: `sessions` ≤32 ids, sorted, only live/idle non-private sessions of this process in this
-workspace; titles never appear here (joined from `session` rows for rendering). Written on turn end
-and at most once per 10 s per workspace while the process has live sessions; deleted best-effort on
+Rules: `sessions` ≤32 ids, sorted, only live/idle non-private sessions of this process;
+`sessionsMeta` is optional title/workspaceLabel help (basenames only). Titles never appear in
+`sessions`; the pulse joins titles from `session` rows. Written on turn end
+and at most once per 10 s per mount while the process has live sessions; deleted best-effort on
 deactivation. Stale after 30 s (ADR 0001 §6). A heartbeat file older than 10 minutes may be deleted
 by any mount (TTL cleanup, §store-format).
 
-### 4.7 Workspace metadata (inside `MANIFEST.v1.json`)
+### 4.7 Global scope metadata (inside `MANIFEST.v1.json`)
 
 ```json
-{"key":"ws_3f9a1c7e2b4d8061","canonicalPath":"D:\\05_Code\\solo-bench",
- "createdAt":"2026-11-13T02:16:51.000Z"}
+{"key":"ws_0000000000000000","canonicalPath":"","label":"All sessions","createdAt":"2026-11-16T02:16:51.000Z"}
 ```
 
-`canonicalPath` is the frozen canonical path used to derive `key` (profile-local; never exported,
-never rendered in the pulse). `label` is *not* stored: it is resolved live at render time
-(`workspaceRegistry.resolveByPath(...)` title if available, else the basename of `canonicalPath`) so
-a rename never requires rewriting a store file. `createdAt` is the first-mount timestamp; the
-first writer to create the manifest wins (`wx` create, §store-format).
+v0.2.0 writes exactly one such manifest for the global scope: `canonicalPath` is empty **only** for
+`GLOBAL_SCOPE_KEY` (manifest validation must accept that), and `label` is `"All sessions"`. Legacy
+per-workspace manifests keep their original `canonicalPath` and are never rewritten; their basename is
+the provenance label for their records. `createdAt` is the first-mount timestamp; the first writer to
+create the manifest wins (`wx` create, §store-format).
 
 ### 4.8 `MANIFEST.v1.json`
 
 Full file schema is owned by [`store-format.md`](store-format.md) §15. The data-model-relevant part:
 `format: "confluence.store/v1"`, `formatVersion: 1`, `ws`, `workspace` (§4.7), `generation: 0` in
 v1-core (compaction increments it in M4), `snapshot: null` in v1-core, `shards`/`seqRange` advisory
-only (directory listing is authoritative), `updatedAt`. There is exactly one manifest per workspace
-at most; a missing or corrupt manifest must not prevent reading shards.
+only (directory listing is authoritative), `updatedAt`. There is exactly one global manifest; legacy
+workspace manifests exist as read-only history and must never prevent reading shards.
 
 ## 5. Derived state
 
@@ -290,13 +314,13 @@ rejected at write time (`E_BAD_RESOLVE`).
 as "stale"). The superseding entry is active and independent. Chains are allowed
 (A supersedes B supersedes C); the effective status only reports the direct marker. Supersede does
 not hide the old entry from history; it down-ranks it in `confluence_search` and excludes it from
-the "what the workspace believes" section of the pulse.
+the "current shared memory" section of the pulse.
 
 ### 5.4 Threads
 
 One level deep: a root entry plus replies whose `replyTo == root.id`. The writer re-targets a reply
 to a reply at the root (tool API detail in [`tool-api.md`](tool-api.md)). A thread renders in
-`seq` order. Thread size is capped by the workspace entry cap; the board/read renders at most 20
+`seq` order. Thread size is capped by the global entry cap; the board/read renders at most 20
 replies and states `+N more`.
 
 ### 5.5 Provenance
@@ -308,7 +332,7 @@ the fixed warning.
 
 ### 5.6 Presence and effective session status
 
-- Presence view for a workspace = union of `sessions` arrays of all presence files with
+- Presence view (global) = union of `sessions` arrays of all presence files with
   `updatedAt` within 30 s and matching `ws`, minus the reading session itself.
 - A ledger row's effective status: `cold` when no presence entry mentions the session **and** its
   `lastActivityTs` is older than 30 s (the presence staleness window; display only); `live` if
@@ -349,9 +373,9 @@ All caps are enforced **at append** (reject, never silent truncate) except where
 | `MAX_TAGS` / `MAX_TAG_CHARS` | 8 / 32 | entry tags | chosen here |
 | `MAX_ENTRY_FILES` | 8 | entry `files` | chosen here |
 | `MAX_PATH_CHARS` | 240 | any stored workspace-relative path | chosen here |
-| `MAX_ENTRIES_PER_WORKSPACE` | 2 000 (config range 50–20 000) | visible entries per workspace; at the cap new `post`/`reply` fail `BOARD_FULL` | ADR config `maxEntriesPerWorkspace`; [`config.md`](config.md) §2.2 |
+| `MAX_ENTRIES_PER_WORKSPACE` | 2 000 (config range 50–20 000) | visible entries in the one global board; at the cap new `post`/`reply` fail `BOARD_FULL`. The config key keeps its v0.1.0 name (`store.maxEntriesPerWorkspace`), meaning global | ADR config `maxEntriesPerWorkspace`; [`config.md`](config.md) §2.2 |
 | `RETENTION_DAYS` | 90 | entries/session rows hidden from default reads (exact-id read still works) | ADR config `retentionDays` |
-| `MAX_LEDGER_SESSIONS` | 200 | newest session rows considered | ADR config `maxSessionsPerWorkspace` |
+| `MAX_LEDGER_SESSIONS` | 200 | newest session rows considered, **profile-wide** | ADR config `ledger.maxSessions` (renamed from `maxSessionsPerWorkspace` in v0.2.0) |
 | `MAX_FILES_PER_SESSION` | 8 | ledger file hints | ADR config `maxFilesPerSession` |
 | `MAX_TOMBSTONES_TRACKED` | 4 096 | tombstone ids in the memory mirror; beyond → re-scan shards for tombstones | chosen here |
 | `PRESENCE_HEARTBEAT_MS` | 10 000 | heartbeat cadence | ADR §6 |
@@ -402,7 +426,7 @@ depend on local shard order.
 ### 7.3 Unread/`new` selection
 
 Given the unread cursor (`boardReadSeq`), candidates are visible entries with
-`seq > boardReadSeq`, filtered to the workspace and not authored by the reading session. Ordering is
+`seq > boardReadSeq`, **not filtered by origin** and not authored by the reading session. Ordering is
 `seq` descending (newest first). Selection for the pulse `New:` line: ≤3 headlines, preferring open
 `question`/`handoff` then `gotcha`/`decision` then the remaining kinds, at most one headline per
 kind; entries older than `PULSE_STALE_AFTER_DAYS` (7) are skipped here (`confluence_board` still
@@ -413,10 +437,11 @@ returns them within retention). This is deterministic for a given record set and
 
 ### 8.1 Writer-side (reject, report)
 
-A writer builds a record via `lib/records.js`, which validates: envelope types/formats; workspace
-key equals the writer's frozen key; enum membership; every cap in §6; id/`replyTo`/`supersedes`
-target existence and kind rules (`E_UNKNOWN_REF`, `E_BAD_RESOLVE`, `E_THREAD_TOO_DEEP`); workspace-
-relative path rules; redaction applied. Failures return stable internal codes; the tool handler maps
+A writer builds a record via `lib/records.js`, which validates: envelope types/formats; `ws` equals the
+global scope constant for new records (legacy records keep their own key); enum membership; every cap in
+§6; id/`replyTo`/`supersedes`
+target existence and kind rules (`E_UNKNOWN_REF`, `E_BAD_RESOLVE`, `E_THREAD_TOO_DEEP`); path rules;
+redaction applied. Failures return stable internal codes; the tool handler maps
 them 1:1 to the authoritative model-facing codes in [`tool-api.md`](tool-api.md) §4
 (`E_BOARD_FULL`→`BOARD_FULL`, `E_BODY_TOO_LARGE`→`BODY_TOO_LARGE`, `E_STORE_WRITE`→
 `STORE_UNAVAILABLE`, …). A record that fails validation is never serialized.
@@ -470,8 +495,8 @@ I3. An `entry` never changes after append; its id is `cnf_` + ULID, a `tombstone
 I4. A `session` id has at most one effective row: the one with the greatest `seq`.
 I5. A tombstone wins over its entry at read time; a tombstoned entry and its thread never appear in
     board/search/pulse/export results, and a direct read returns a deleted stub without content.
-I6. A session id is bound to at most one workspace key for its lifetime; a session row never moves
-    between workspaces (workspace resolver freeze; no silent migration).
+I6. One global scope: every new record's `ws` is the global constant, and origin is provenance only
+    (a session may write records with no origin; nothing is partitioned or filtered by it).
 I7. `seq` is strictly increasing per writer; merged order is lexicographic `seq` order and is
     identical for every reader.
 I8. Duplicate lines are idempotent: identical retries change nothing; differing duplicates never

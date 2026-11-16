@@ -278,7 +278,7 @@ test('UT-CONFIG-04 boundary values are accepted without warnings', () => {
       dir: 'D:\\stores\\confluence',
     },
     pulse: { maxChars: 400, maxPeers: 0, maxHeadlines: 0 },
-    ledger: { maxFilesPerSession: 0, maxSessionsPerWorkspace: 20 },
+    ledger: { maxFilesPerSession: 0, maxSessions: 20 },
     recall: { maxSessions: 10, maxHits: 20, timeoutMs: 30000 },
     ui: { pollMs: 2000 },
     export: { dir: 'nested/dir' },
@@ -293,24 +293,31 @@ test('UT-CONFIG-04 boundary values are accepted without warnings', () => {
   assert.equal(config.export.dir, 'nested/dir')
 })
 
-test('UT-CONFIG-05 privacy lists: valid ids/workspaces accepted, invalid entries dropped with warnings', () => {
+test('UT-CONFIG-05 privacy lists: valid session ids accepted, invalid dropped; per-workspace opt-out is deprecated', () => {
   const { config, warnings } = resolveConfig({
     privacy: {
       privateSessions: ['session-abc-123', 'x', 'ok_id-2'],
-      disabledWorkspaces: ['ws_0123456789abcdef', 'D:\\05_Code\\scratch', 'relative/nope'],
+      disabledWorkspaces: ['ws_0123456789abcdef', 'D:\\05_Code\\scratch'],
     },
   })
   assert.deepEqual(config.privacy.privateSessions, ['session-abc-123', 'ok_id-2'])
-  assert.deepEqual(config.privacy.disabledWorkspaces, ['ws_0123456789abcdef', 'D:\\05_Code\\scratch'])
+  assert.equal('disabledWorkspaces' in config.privacy, false, 'v0.2.0 has no per-workspace boundary')
   assert.ok(warnings.includes('CONFIG_INVALID_VALUE privacy.privateSessions#1'))
-  assert.ok(warnings.includes('CONFIG_INVALID_VALUE privacy.disabledWorkspaces#2'))
+  assert.ok(warnings.includes('CONFIG_DEPRECATED privacy.disabledWorkspaces'))
+})
+
+test('UT-CONFIG-05b deprecated ledger cap is mapped to the global ledger cap', () => {
+  const { config, warnings } = resolveConfig({ ledger: { maxSessionsPerWorkspace: 50 } })
+  assert.equal(config.ledger.maxSessions, 50)
+  assert.ok(warnings.includes('CONFIG_DEPRECATED ledger.maxSessionsPerWorkspace'))
+  const modern = resolveConfig({ ledger: { maxSessions: 50, maxSessionsPerWorkspace: 900 } })
+  assert.equal(modern.config.ledger.maxSessions, 50, 'new key wins when both are present')
 })
 
 test('UT-CONFIG-06 publicConfig strips list contents to counts', () => {
   const { config } = resolveConfig({
     privacy: {
       privateSessions: ['session-super-secret'],
-      disabledWorkspaces: ['D:\\very\\secret\\workspace'],
       redactPatterns: ['secret-pattern-.*'],
       denyPathPatterns: ['**/*.pem'],
     },
@@ -319,13 +326,12 @@ test('UT-CONFIG-06 publicConfig strips list contents to counts', () => {
   const safe = publicConfig(config)
   const serialized = JSON.stringify(safe)
   assert.ok(!serialized.includes('session-super-secret'))
-  assert.ok(!serialized.includes('very\\secret') && !serialized.includes('very\\\\secret'))
   assert.ok(!serialized.includes('secret-pattern'))
   assert.ok(!serialized.includes('Users'))
   assert.equal(safe.privacy.privateSessionsCount, 1)
-  assert.equal(safe.privacy.disabledWorkspacesCount, 1)
   assert.equal(safe.privacy.redactPatternsCount, 1)
   assert.equal(safe.privacy.denyPathPatternsCount, 1)
+  assert.equal('disabledWorkspacesCount' in safe.privacy, false)
   assert.equal(safe.debug.logFileEnabled, true)
   assert.doesNotThrow(() => publicConfig(undefined))
 })

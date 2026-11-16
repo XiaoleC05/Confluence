@@ -8,6 +8,18 @@
   [`../adr/0005-ui-transport.md`](../adr/0005-ui-transport.md) (channel decision),
   [`../plan/m0-spikes.md`](../plan/m0-spikes.md) §8 (spike S6), ADR-0001 §12.
 
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md), delta
+> §7).** The panel becomes **one global timeline**, titled "汇流记忆 / Confluence memory": entries from
+> every session, a kind filter plus free-text search (search matches titles/bodies/tags; no separate
+> tag facet in v0.2.0), entry detail + thread, live peers, and a **provenance chip**
+> showing the originating workspace label when the host supplies one. **There is no workspace
+> switcher** and no workspace parameter anywhere; `GET /confluence/panel/overview?q=&kind=&limit=` and
+> `GET /confluence/panel/entry?id=` serve `scope:{key:'global',label:'All sessions'}`, and the
+> v0.1.0 `/workspaces` route is removed. The privacy control for "share this workspace" is gone
+> (`privacy.disabledWorkspaces` removed); `privacy.privateSessions` (per session) remains, with the
+> same confirmations. The locale inventory is 86 keys in both files (see §5). The v0.1.0 wireframe,
+> component tree, workspace-switcher section and some locale copy below are historical.
+
 ## 1. Surface decision
 
 ### 1.1 Chosen surfaces (M3)
@@ -18,8 +30,8 @@
 | Page | keyed `main` | `ctx.slots.inject('main', function* () { yield ctx.slots.register({ name: 'main', key: 'confluence', locale: 'confluence', inject: () => ({ t, closePanel: () => ctx.layout.selectPanel(null) }) }, ConfluencePage) })` | live client inspection: keyed `main` verified; Crisp `client.js:520-533`; `selectPanel(null)` verified `dsh-client-ui-layout/lib/client.js:505-543` |
 
 Reasons: (1) the pair is proven twice on this host line (Crisp, dsh-context) and is the only slot
-combination with room for a workspace-global timeline + detail + controls; (2) the left rail is
-global across conversations, matching a workspace-scoped board; (3) navigation already exists
+combination with room for a global timeline + detail + controls; (2) the left rail is
+global across conversations, matching a profile-wide memory space; (3) navigation already exists
 (`selectPanel('confluence')` opens, `selectPanel(null)` returns, `main` is a keyed page). Entry order
 `30` follows Crisp (`2`) and dsh-context (`20`) without reordering them.
 
@@ -50,11 +62,11 @@ a second app root, or `conversation.composer.dock` as a panel.
 
 ```text
 ┌ left rail ─┬───────────────────────────────────────────────────────────────────────┐
-│ ◇ Conflu-  │  Confluence · solo-bench                        2 here   [⟳] [Back]   │
-│   ence     │  D:\05_Code\solo-bench · ws_1a2b… · updated 12:03:44    [Workspace ▾] │
+│ ◇ Conflu-  │  汇流记忆 / Confluence memory                      2 here   [⟳] [Back]   │
+│   ence     │  All sessions · shared memory · updated 12:03:44                       │
 │  (汇流)    ├───────────────────────────────────────────────────────────────────────┤
-│            │  [banner: storage degraded / partial records / private / no workspace] │
-│            │  [Search board notes…] All Finding Decision Gotcha Question Handoff   │
+│            │  [banner: storage degraded / partial records / private]               │
+│            │  [Search shared memory…] All Finding Decision Gotcha Question Handoff │
 │            │  Warning  [Unread only]                          [Mark all read]      │
 │            │  ┌ timeline (flex 1) ────────────────────┐ ┌ detail (420px) ──────────┐ │
 │            │  │ Today                                 │ │ [gotcha] shared data    │ │
@@ -62,10 +74,10 @@ a second app root, or `conversation.composer.dock` as a panel.
 │            │  │   by "Auth work" · 2 replies · #win32 │ │ body text (plain)       │ │
 │            │  │ ○ [decision] Pin deps to 0.2.x        │ │ by "Data migration"     │ │
 │            │  │   by "Data migration" · resolved      │ │ files · replies (2)     │ │
-│            │  │ Yesterday … [Show older notes]        │ │ [Mark read] [Copy id]   │ │
+│            │  │ Yesterday … [Show older notes]        │ │ origin: solo-bench      │ │
 │            │  └───────────────────────────────────────┘ └─────────────────────────┘ │
 │            │  ▸ Open questions & handoffs  2 questions · 1 handoff               │ │
-│            │  [✓] Share this workspace     [ ] Make this session private         │ │
+│            │  Shared with every session in this profile  [ ] Make this session private │
 │            │  audit  Last refresh 12:03:44 · transport host.call · recall 12:02 …│ │
 └────────────┴───────────────────────────────────────────────────────────────────────┘
 ```
@@ -74,18 +86,19 @@ a second app root, or `conversation.composer.dock` as a panel.
 
 ```text
 ConfluencePage                    <section aria-labelledby="cf-title">; .cf-page
-├─ PageHeader                     h1#cf-title, workspace chip "汇流", path/wsKey/updated row
+├─ PageHeader                     h1#cf-title, "汇流记忆" chip, scope row (All sessions · updated)
 │  ├─ PresenceStrip               role="status": dot + "{n} active now" + ≤2 titles
-│  └─ HeaderActions               WorkspaceSwitcher · Refresh · BackToChat
+│  └─ HeaderActions               Refresh · BackToChat        (no workspace switcher)
 ├─ StatusBanners                  one banner per active state (§4)
 ├─ Toolbar                        SearchBox (250 ms debounce, ≥2 chars) · KindFilters ·
 │                                 UnreadOnlySwitch · MarkAllReadButton
 ├─ ContentGrid
 │  ├─ BoardTimeline               role="list"; day headings; EntryRow ×n; load-more
 │  └─ DetailPane                  role="region"; UntrustedNotice · EntryBody · Provenance ·
-│                                 ReplyThread · EntryActions (MarkRead, CopyId)
+│                                 OriginChip (workspace label, when present) · ReplyThread ·
+│                                 EntryActions (MarkRead, CopyId)
 ├─ OpenItemsSection               collapsible: open questions / open handoffs, jump links
-├─ PrivacySection                 stored-vs-on-demand text; two toggles (§7.7)
+├─ PrivacySection                 stored-vs-on-demand text; private-session toggle (§7.7)
 └─ AuditFooter                    last refresh, transport mode, version, store root, recall tail
 ```
 
@@ -136,6 +149,16 @@ Errors normalize to `{ code, message, retryable }`; non-JSON or oversized bodies
 `PANEL_TRANSPORT_BAD_PAYLOAD`; the panel never renders host text verbatim.
 
 ### 3.5 Payload contract `confluence.panel.v1`
+
+> **v0.2.0 supersedes this sketch.** The shipped panel uses the same-origin route adapter only, with
+> exactly three GET routes: `GET /confluence/panel/ping`, `GET /confluence/panel/overview?q=&kind=&limit=`
+> and `GET /confluence/panel/entry?id=`. There is **no** `workspaces` method/route, no `workspaceKey`
+> parameter, and no candidate `search`/`markRead`/`setOptOut` over the route (GET only; the opt-out
+> needs the config editor). `overview` returns `{ok, scope:{key:'global',label:'All sessions'},
+> entries:[{id,seq,kind,title,authorTitle,workspaceLabel,ts,status,replyCount}], stats, peers, truncated}`
+> and `entry` returns `{ok, entry:{…, workspaceLabel?}, replies}`; workspace data appears only as the
+> basename provenance label. The `confluence.panel.v1` shape below is the v0.1.0 record and remains
+> historical.
 
 All methods return objects with `protocol: "confluence.panel.v1"`; unknown fields are ignored and only
 the listed ones are required. Caps are server-enforced. `warnings` is a `string[]` of stable
@@ -257,7 +280,8 @@ cannot forge a session event, so `boardReadSeq` remains tool-derived (ADR-0001 �
 
 ## 4. Panel states
 
-Priority: `error` > `no-workspace` > `disabled` > `private` > `corrupt` > `degraded` > `ok`. Only
+Priority: `error` > `disabled` > `private` > `corrupt` > `degraded` > `ok` (the v0.2.0 panel has no
+`no-workspace` state: the memory space always exists). Only
 the first two render as full banners; the rest render inline.
 
 | State | Trigger | Render | Actions |
@@ -286,23 +310,29 @@ Non-urgent banners use `role="status"`; failures `role="alert"`; repeated polls 
   `ctx.locale.bind` interpolates). If not, one `format(template, params)` helper.
 
 **Existing scaffold keys** are already shipped in both JSON files and asserted by
-`test/contract.test.js:64-87`; they stay unchanged and must keep their names: `panel`, `board.title`,
-`board.subtitle`, `board.empty`, `board.unread`, `pulse.title`, `pulse.empty`, `recall.title`,
-`recall.empty`, `workspace.label`, `workspace.unavailable`, `search.label`, `search.placeholder`,
-`search.empty`, `questions.open`, `handoffs.open`, `peers.live`, `markRead`, `markRead.done`,
-`entry.open`, `entry.resolved`, `ledger.title`.
+`test/contract.test.js`; they keep their **names** (client dictionary parity) but their v0.2.0 copy is
+universal: `panel`, `board.title` ("Shared notes"), `board.subtitle` ("Notes published by any session on
+this machine"), `board.empty`, `board.unread`, `pulse.title`, `pulse.empty`, `recall.title`,
+`recall.empty`, `workspace.label` ("Origin" — the provenance chip label), `workspace.unavailable`,
+`search.label` ("Search shared memory"), `search.placeholder`, `search.empty` ("No shared notes
+matched."), `questions.open`, `handoffs.open`, `peers.live`, `markRead`, `markRead.done`, `entry.open`,
+`entry.resolved`, `ledger.title`.
+
+v0.2.0 adds `scope.global` ("All sessions" / "全部会话") for the scope chip; the shipped inventory is
+**86 keys** in each file (`locale/*.json` is canonical, not this table).
 
 New M3 keys (added to `locale/*.json` and the client dictionary; en | zh):
 
 | Key | en | zh |
 |---|---|---|
-| `panel.subtitle` | Shared memory for this workspace, from every session that runs here. | 同一工作区中所有会话共享的记忆。 |
+| `panel.subtitle` | Shared memory across every session in this profile. | 此配置文件中所有会话共享的记忆。 |
+| `scope.global` | All sessions | 全部会话 |
 | `nav.back` | Back to chat | 返回对话 |
 | `action.refresh` / `action.retry` / `action.cancel` | Refresh / Retry / Cancel | 刷新 / 重试 / 取消 |
 | `state.loading` / `state.loadError` | Loading shared memory… / Unable to load shared memory | 正在读取共享记忆… / 无法读取共享记忆 |
-| `state.noWorkspace.title` / `.body` | No workspace yet / Open a session in a project directory to create this workspace's shared memory. | 暂无工作区 / 在项目目录中打开会话后，这里会出现该工作区的共享记忆。 |
+| `state.noWorkspace.title` / `.body` | Nothing shared yet / Sessions publish notes with confluence_post; they appear here for every session in this profile. | 还没有共享内容 / 会话用 confluence_post 发布笔记后，此配置文件中的每个会话都能在这里看到。 |
 | `state.private.title` / `.body` | This session is private / Its activity is not recorded, and shared memory is hidden from its agent. | 此会话为私密 / 不会记录此会话的活动，其代理也看不到共享记忆。 |
-| `state.disabled.title` / `.body` | Sharing is off for this workspace / New notes stop being shared and sessions here do not see the board; stored notes are retained. | 此工作区已关闭共享 / 新笔记停止共享，此工作区的会话看不到共享板；已存储的笔记仍保留。 |
+| `state.disabled.title` / `.body` | Shared memory is off / The plugin is disabled in this profile's config; no new notes are recorded. Stored notes are retained. | 共享记忆已关闭 / 插件已在此配置文件中停用；不再记录新笔记，已存储的笔记仍保留。 |
 | `state.degraded` / `state.corrupt` / `state.stale` | Shared memory storage is unavailable. Sessions continue without it. / {n} unreadable records were skipped. / Not refreshed since {time}. Retrying… | 共享记忆存储不可用，会话将在没有它的情况下继续。/ 已跳过 {n} 条无法读取的记录。/ 自 {time} 起未刷新，正在重试… |
 | `state.savedRestart` / `state.configUnavailable` | Saved. The plugin reloads to apply this setting. / This control needs the profile config editor; edit the config key instead. | 已保存，插件将重载以应用此设置。/ 此控件需要配置文件编辑器；请改为编辑配置项。 |
 | `ui.disabled.title` / `.body` | The Confluence panel is disabled / Set ui.enabled: true in the plugin config and reload. | Confluence 面板已停用 / 在插件配置中设置 ui.enabled: true 并重载。 |
@@ -316,9 +346,9 @@ New M3 keys (added to `locale/*.json` and the client dictionary; en | zh):
 | `detail.copyId` / `detail.tags` / `detail.provenance` | Copy id / Tags / by {author} | 复制 ID / 标签 / 由 {author} 提供 |
 | `entry.replies` / `entry.replyOne` | {n} replies / 1 reply | {n} 条回复 / 1 条回复 |
 | `questions.count` / `questions.empty` | {q} questions · {h} handoffs / No open questions or handoffs. | {q} 个问题 · {h} 个交接 / 没有未解决的问题或交接。 |
-| `peers.none` / `workspaces.switch` | No other sessions in this workspace / Workspace | 此工作区没有其他会话 / 工作区 |
+| `peers.none` / `workspaces.switch` | No other live sessions / All sessions | 没有其他活跃会话 / 全部会话 |
 | `privacy.title` / `privacy.stored` | What is shared / Stored: note titles and bodies, session titles, relative paths and counts. Recall reads past logs only when an agent explicitly asks, and returns short excerpts. | 共享内容 / 已存储：笔记标题与正文、会话标题、相对路径与计数。只有代理明确要求时，回忆功能才读取以往日志并返回短摘录。 |
-| `privacy.shareWorkspace` / `.hint` | Share this workspace / Notes and metadata are shared with every session here. | 共享此工作区 / 笔记与元数据会与此工作区的每个会话共享。 |
+| `privacy.shareWorkspace` / `.hint` | Shared with every session in this profile / Shared memory is profile-wide: notes and metadata are visible to every session on this machine. | 与此配置文件中的所有会话共享 / 共享记忆是整个配置文件范围的：此机器上的每个会话都能看到笔记与元数据。 |
 | `privacy.privateSession` / `.hint` | Make this session private / No activity is recorded and shared memory is hidden from this session. | 将此会话设为私密 / 不记录活动，并对此会话隐藏共享记忆。 |
 | `audit.title` / `audit.empty` / `audit.row` | Recall activity / No recall calls since this window started. / {session} · {query} · {hits} hits · {time} | 回忆活动 / 此窗口启动以来没有回忆调用。/ {session} · {query} · {hits} 条命中 · {time} |
 | `retention.hidden` / `board.showOlder` | Notes older than {days} days are hidden. / Show older notes | 超过 {days} 天的笔记已隐藏。/ 显示更早的笔记 |
@@ -375,11 +405,12 @@ focus is **Cancel**, focus trap, `Escape`/backdrop cancels, focus returns to the
 ### 7.2 Confirmation for destructive actions
 
 Two modal dialogs (`role="dialog" aria-modal="true" aria-labelledby` + `aria-describedby`): **turn
-off sharing for this workspace** (no new notes shared; board hidden; stored notes retained; plugin
-reloads; danger-styled primary, Cancel focused) and **make this session private** (activity no longer
-recorded; shared memory hidden from the agent; immediate). Re-enable uses the inverse dialog. M4 adds
-hiding an entry (typed confirmation, last 4 chars of the entry id; DSH logs are not modified).
-Mark-all-read needs no confirmation and is followed by `markRead.done` until new data arrives.
+shared memory off at the plugin level** (v0.2.0 has no per-workspace sharing switch; the honest
+alternative is disabling the row or setting `enabled:false`, and the dialog says so) and **make this
+session private** (activity no longer recorded; shared memory hidden from the agent; immediate).
+Re-enable uses the inverse dialog. M4 adds hiding an entry (typed confirmation, last 4 chars of the
+entry id; DSH logs are not modified). Mark-all-read needs no confirmation and is followed by
+`markRead.done` until new data arrives.
 
 ### 7.3 Search and filters
 
@@ -394,33 +425,35 @@ Opens on row click/Enter via `confluence.entry`; cached for the poll cycle and i
 `confluence_read`/`confluence_reply` in chat (clipboard failure → transient notice). A vanished
 entry (M4 tombstone, retention) shows "no longer available" and returns to the list.
 
-### 7.5 Workspace switcher
+### 7.5 Scope (no workspace switcher)
 
-Default workspace = `preferred`; the switcher lists ≤20 known workspaces (name, path, counts) and is
-hidden when only one exists. Switching is client memory only (not config, not localStorage); keys are
-opaque; the UI never constructs a filesystem path.
+There is exactly one scope: `{ key:'global', label:'All sessions' }`. The panel never lists, selects
+or switches workspaces and never sends a workspace key; the header shows the scope label and the
+detail pane shows an entry's **origin** (workspace basename) as a provenance chip when the host
+supplies one. The old switcher is deliberately gone (ADR 0007 §2.5).
 
 ### 7.6 Mark-read semantics (M3)
 
 The **user cursor** is the panel's unread model, distinct from the model's log-derived
 `boardReadSeq`. The client keeps `{v:1, throughSeq, readIds:[≤200]}` in
-`localStorage['dsh.confluence.panel.read.' + wsKey]`, sends `readThrough` with each `overview`, and
-the Host computes `board.unread` for the whole workspace. Opening a detail adds its id; "Mark all
-read" sends `confluence.markRead({workspaceKey, throughSeq: board.headSeq})`, which validates the
-seq, mirrors the cursor in-process (same-process windows agree), and returns it for the client to
-persist. This never advances the model watermark — a UI click is not a committed session event
-(ADR-0001 §8.1). Clearing site data resets only the user cursor; M4 may move it Host-side.
+`localStorage['dsh.confluence.panel.read.global']` (v0.2.0: one fixed key, no workspace suffix), sends
+`readThrough` with each `overview`, and the Host computes `board.unread` for the whole shared board.
+Opening a detail adds its id; "Mark all read" sends `confluence.markRead({throughSeq: board.headSeq})`,
+which validates the seq, mirrors the cursor in-process (same-process windows agree), and returns it for
+the client to persist. This never advances the model watermark — a UI click is not a committed session
+event (ADR-0001 §8.1). Clearing site data resets only the user cursor; M4 may move it Host-side.
 
 ### 7.7 Privacy controls
 
-**Share this workspace** (on; off = `privacy.disabledWorkspaces` entry) and **make this session
-private** (off; on = `privacy.privateSessions` entry) with the confirmations above. The current
-session's agent stops seeing shared memory immediately (scoped suppressor) and the panel discloses
-the state; the panel still shows the workspace board to the *user* when the session is private (the
-private state is about session participation, not user visibility) and says so. Persistence goes
-through `confluence.setOptOut` → config editor; if unavailable (`capabilities.optOut:
-'unavailable'`) the toggle is disabled and shows the exact config key (`state.configUnavailable`).
-After a successful write: `state.savedRestart`, tolerate the plugin reload.
+Only one control survives in v0.2.0: **make this session private** (off; on = a
+`privacy.privateSessions` entry; off again removes it) with the confirmation above. The workspace
+sharing toggle is gone with `privacy.disabledWorkspaces` (ADR 0007 §6). The current session's agent
+stops seeing shared memory immediately (scoped suppressor) and the panel discloses the state; the
+panel still shows the global board to the *user* when the session is private (the private state is
+about session participation, not user visibility) and says so. Persistence goes through
+`confluence.setOptOut` → config editor; if unavailable (`capabilities.optOut: 'unavailable'`) the
+toggle is disabled and shows the exact config key (`state.configUnavailable`). After a successful
+write: `state.savedRestart`, tolerate the plugin reload.
 
 ### 7.8 Audit footer and telemetry
 
@@ -433,7 +466,7 @@ pre-restart recalls are not shown; the footer labels it "since this window start
 
 Poll `ui.pollMs` (default 5,000 ms, clamp 2,000–30,000) **only while visible** and mounted;
 `visibilitychange` to visible triggers an immediate refresh; single in-flight request (skip a tick,
-abort on unmount/workspace switch, 8 s timeout); failures keep the last data, show `state.stale`
+abort on unmount, 8 s timeout); failures keep the last data, show `state.stale`
 with the last success time, and back off 5→10→20→30 s (reset on success). No push, SSE or WebSocket:
 polling is the whole freshness model, same contract as the store (ADR-0001 §6/§12).
 

@@ -10,6 +10,15 @@ Every result must be filled into §10 (replace the `TBD` cells) with a link to a
 **sanitized** evidence summary. Do not paste session content, prompts, or secrets into evidence —
 counts, byte excerpts of synthetic fixture data, event shapes and command output fragments only.
 
+> **v0.2.0 amendment (universal memory, ADR 0007).** The executed §10 results remain valid: every
+> spike measured host/runtime mechanics (runtime-context commit, projection fold, append/torn-line
+> durability, leases, transport), not the memory scope. Two wording changes apply from v0.2.0:
+> (a) shards are written to one **global** scope directory (`workspaces/ws_0000000000000000/`), so
+> "same synthetic workspace" in a method below means "same store / same profile"; (b) the panel route
+> list is now `ping`/`overview`/`entry` (the `/workspaces` route was removed), which S6's shipped
+> fallback already covers. The cross-workspace acceptance test is **not** an M0 spike — it lives in
+> [`../design/testing.md`](../design/testing.md) and is the v0.2.0 release gate.
+
 ---
 
 ## 1. Why M0 exists
@@ -247,7 +256,8 @@ path.
 **Method**
 
 1. Start two independent headless runs against the **same** scratch `DSH_HOME` and the same synthetic
-   workspace; each appends to its own shard (throwaway bundle). Measure the reader's observation
+   store (v0.2.0: the single global scope); each appends to its own shard (throwaway bundle). Measure
+   the reader's observation
    latency of the other writer's record over 20 polls (expect ≤ `pollMs` + I/O slack), and assert no
    record loss/duplication in the merge.
 2. Desktop topology: with the user's participation (open a second Harness window), record

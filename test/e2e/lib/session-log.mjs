@@ -19,6 +19,51 @@ import { zstdDecompressSync } from 'node:zlib'
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
 /**
+ * Pulse tag names.
+ *
+ * v0.2.0 (universal memory, ADR-0007) commits `<confluence-memory scope="global" …>`.
+ * v0.1.0 session logs (and resume/fork snapshots inherited from them) carry the
+ * legacy `<confluence-workspace …>` block. Both are valid pulse carriers, so every
+ * E2E/smoke check below accepts either name and reports which one it saw.
+ */
+export const MEMORY_PULSE_TAG = 'confluence-memory'
+export const LEGACY_PULSE_TAG = 'confluence-workspace'
+export const PULSE_TAG_NAMES = Object.freeze([MEMORY_PULSE_TAG, LEGACY_PULSE_TAG])
+
+/** Opening tag of a pulse block: `\u003c` is accepted defensively (escaped form). */
+const PULSE_HEADER_RE = /(?:\\u003c|<)confluence-(memory|workspace)\b([^>]*)>/i
+const PULSE_ATTRIBUTE_RE = /([a-zA-Z_][\w:.-]*)\s*=\s*"([^"]*)"/g
+
+/**
+ * Parse the pulse opening tag.
+ * @param {unknown} text
+ * @returns {{ tag: string, raw: string, attributes: Record<string,string> } | null}
+ */
+export function pulseHeader(text) {
+  if (typeof text !== 'string') return null
+  const match = PULSE_HEADER_RE.exec(text)
+  if (match === null) return null
+  const attributes = {}
+  for (const attribute of match[2].matchAll(PULSE_ATTRIBUTE_RE)) attributes[attribute[1]] = attribute[2]
+  return { tag: `confluence-${match[1].toLowerCase()}`, raw: match[0], attributes }
+}
+
+/**
+ * Name of the pulse tag carried by `text` (`confluence-memory` / `confluence-workspace`),
+ * or null when the text is not a pulse block. Accepts both generations.
+ * @param {unknown} text
+ * @returns {string | null}
+ */
+export function pulseTag(text) {
+  return pulseHeader(text)?.tag ?? null
+}
+
+/** @param {unknown} text @returns {boolean} */
+export function isPulseText(text) {
+  return pulseTag(text) !== null
+}
+
+/**
  * Walk concatenated zstd frames and return their decompressed payloads.
  * Implements only the frame-skipping subset of RFC 8878 needed to find frame
  * boundaries: frame header descriptor, optional window/dictionary/content-size
@@ -149,11 +194,23 @@ export function sectionText(snapshotMessage, sectionName) {
   return typeof match.text === 'string' ? match.text : ''
 }
 
-/** Pulse snapshots: runtime-context messages whose sections include `confluence:pulse`. */
+/**
+ * Pulse snapshots: runtime-context messages whose sections include `confluence:pulse`
+ * and whose text carries a pulse block. Both tag generations are accepted so a run
+ * that resumes a v0.1.0 session (legacy `<confluence-workspace>`) still reports its
+ * inherited pulse, while new commits use `<confluence-memory scope="global" …>`.
+ *
+ * @param {object[]} events
+ * @returns {{message: object, pulseText: string, tag: string, header: object}[]}
+ */
 export function pulseSnapshots(events) {
   return runtimeContextMessages(events)
-    .map((message) => ({ message, pulseText: sectionText(message, 'confluence:pulse') }))
-    .filter((entry) => entry.pulseText !== undefined)
+    .map((message) => {
+      const pulseText = sectionText(message, 'confluence:pulse')
+      const header = pulseHeader(pulseText)
+      return { message, pulseText, tag: header?.tag ?? null, header }
+    })
+    .filter((entry) => typeof entry.pulseText === 'string' && entry.tag !== null)
 }
 
 /** Full text of a message event (joins text blocks; ignores non-text blocks). */
@@ -183,15 +240,75 @@ export function toolNames(events) {
   return names
 }
 
-/** Assistant `tool/call` names committed in the session. */
-export function toolCalls(events) {
+/**
+ * Assistant `tool/call` records: name plus the decoded arguments object.
+ * `arguments` is committed as a JSON string; malformed JSON is surfaced as
+ * `parseError` rather than thrown so assertions can name the offending call.
+ *
+ * @param {object[]} events
+ * @returns {{ name: string, callId: string, argumentsText: string, input: object | null, parseError?: string }[]}
+ */
+export function toolCallRecords(events) {
   const calls = []
   for (const event of events) {
     if (event.type !== 'tool/call') continue
     const name = event?.data?.name ?? event?.data?.call?.name
-    if (typeof name === 'string') calls.push(name)
+    if (typeof name !== 'string') continue
+    const raw = event?.data?.arguments ?? event?.data?.call?.arguments
+    const argumentsText = typeof raw === 'string' ? raw : raw === undefined ? '' : JSON.stringify(raw)
+    let input = null
+    let parseError
+    if (argumentsText !== '') {
+      try {
+        const parsed = JSON.parse(argumentsText)
+        input = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+      } catch (error) {
+        parseError = String(error && error.message ? error.message : error)
+      }
+    } else {
+      input = {}
+    }
+    calls.push({
+      name,
+      callId: typeof event?.data?.callId === 'string' ? event.data.callId : '',
+      argumentsText,
+      input,
+      ...(parseError === undefined ? {} : { parseError }),
+    })
   }
   return calls
+}
+
+/** Assistant `tool/call` names committed in the session. */
+export function toolCalls(events) {
+  return toolCallRecords(events).map((call) => call.name)
+}
+
+/**
+ * Committed tool-result texts (rendered output the model saw).
+ * @param {object[]} events
+ * @returns {{ callId: string, text: string, isError: boolean }[]}
+ */
+export function toolResults(events) {
+  const results = []
+  for (const event of events) {
+    if (event.type !== 'tool/result') continue
+    const content = event?.data?.message?.content
+    let text = ''
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) {
+      text = content
+        .filter((block) => block && typeof block === 'object' && typeof block.text === 'string')
+        .map((block) => block.text)
+        .join('\n')
+    }
+    results.push({
+      callId: typeof event?.data?.message?.toolCallId === 'string' ? event.data.message.toolCallId : '',
+      text,
+      isError: event?.data?.message?.isError === true,
+    })
+  }
+  return results
 }
 
 /** The final answer text from a `--json` headless run (NDJSON on stdout). */
@@ -220,6 +337,8 @@ if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` || proc
   }
   const { header, events } = decodeSessionLogFile(file)
   process.stdout.write(`${JSON.stringify({ header, eventCount: events.length }, null, 2)}\n`)
+  const pulses = pulseSnapshots(events)
+  process.stdout.write(`pulse snapshots: ${pulses.length === 0 ? 'none' : pulses.map((pulse) => pulse.tag).join(', ')}\n`)
   for (const event of events) {
     process.stdout.write(`${String(event.seq ?? '-').padStart(3)} ${event.type}\n`)
   }

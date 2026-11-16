@@ -1,11 +1,14 @@
-// Confluence / 汇流 — WP6 tests: Host UI routes (lib/hostui.js) and the Web panel
-// client half (client.js). Dependency-free: node:test + node:assert/strict + node:vm.
+// Confluence / 汇流 — v0.2.0 tests: Host UI routes (lib/hostui.js) and the Web panel
+// client half (client.js), both universal-memory (ADR-0007) read-only surfaces.
+// Dependency-free: node:test + node:assert/strict + node:vm.
 //
 // Coverage:
-//   WO-01..WO-18  hostui registration, route guards, payload contract, caps, errors
-//   UI-01..UI-04  client ModuleLoader contract, slot registrations, static scan, i18n
+//   WO-01..WO-18  hostui registration, three routes, guards, global payload shapes
+//                 (no workspace parameter), provenance labels, caps, error mapping
+//   UI-01..UI-05  client ModuleLoader contract, three-route/global timeline rendering,
+//                 static read-only/offline scan, shipped-locale key coverage
 //
-// Run from the repository root: node --test "test/*.test.js"
+// Run from the repository root: node --test --test-force-exit "test/hostui.test.js"
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -17,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import {
   HOSTUI_PREFIX,
   MAX_RESPONSE_BYTES,
+  PANEL_SCOPE,
   PLUGIN_NAME,
   PLUGIN_VERSION,
   hostuiInternals,
@@ -28,10 +32,10 @@ const CLIENT_PATH = path.join(ROOT, 'client.js')
 const CLIENT_SOURCE = readFileSync(CLIENT_PATH, 'utf8')
 const ROUTE_PATHS = {
   ping: `${HOSTUI_PREFIX}/ping`,
-  workspaces: `${HOSTUI_PREFIX}/workspaces`,
   overview: `${HOSTUI_PREFIX}/overview`,
   entry: `${HOSTUI_PREFIX}/entry`,
 }
+const REMOVED_WORKSPACES_ROUTE = `${HOSTUI_PREFIX}/workspaces`
 const WS_KEY = 'ws_0123456789abcdef'
 const ENTRY_ID = 'cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD'
 
@@ -104,21 +108,28 @@ function createCtx({ webServer, connection, logger } = {}) {
   return ctx
 }
 
+/** Global overview shape the updated facade returns (no workspace header). */
+function emptyOverview() {
+  return { scope: { key: 'global', label: 'All sessions' }, entries: [], stats: {}, peers: [], truncated: false }
+}
+
 function createFacade(data = {}) {
   const calls = []
+  const has = (key) => Object.prototype.hasOwnProperty.call(data, key)
   const facade = {
     calls,
+    async overview(requested) {
+      calls.push(['overview', requested])
+      return has('overview') ? data.overview : emptyOverview()
+    },
+    async entry(id) {
+      calls.push(['entry', id])
+      return has('entry') ? data.entry : null
+    },
+    // v0.1.0 surface that must no longer be used by the panel.
     async listWorkspaces() {
       calls.push(['listWorkspaces'])
-      return data.workspaces ?? []
-    },
-    async overview(wsKey, options) {
-      calls.push(['overview', wsKey, options])
-      return data.overview ?? null
-    },
-    async entry(wsKey, id) {
-      calls.push(['entry', wsKey, id])
-      return data.entry ?? null
+      throw new Error('workspace listing must not be used by the global panel')
     },
   }
   return facade
@@ -146,7 +157,6 @@ function mount(data, { connection, logger, config, facade } = {}) {
   const usedFacade = facade ?? createFacade(data)
   const dispose = registerHostUi(ctx, {
     facade: usedFacade,
-    workspaceResolver: { resolve: () => null },
     config: config ?? { ui: { enabled: true } },
     logger: logger ?? ctx.logger,
   })
@@ -155,6 +165,10 @@ function mount(data, { connection, logger, config, facade } = {}) {
 
 function summaryKeys(entry) {
   return Object.keys(entry).sort()
+}
+
+function makeEntryId(index) {
+  return `cnf_${String(index).padStart(26, '0')}`
 }
 
 // ---------------------------------------------------------------------------
@@ -187,25 +201,24 @@ test('WO-03 registerHostUi mounts nothing when ui.enabled is false', () => {
   assert.doesNotThrow(() => mounted.dispose())
 })
 
-test('WO-04 registers exactly the four exact routes and disposes them idempotently', () => {
+test('WO-04 registers exactly the three global routes and disposes them idempotently', () => {
   const mounted = mount({})
   assert.deepEqual([...mounted.webServer.routes.keys()].sort(), Object.values(ROUTE_PATHS).sort())
-  assert.equal(mounted.ctx.effects.length, 4)
+  assert.equal(mounted.webServer.routes.has(REMOVED_WORKSPACES_ROUTE), false, 'the /workspaces route must be gone')
+  assert.equal(mounted.ctx.effects.length, 3)
   mounted.dispose()
   assert.equal(mounted.webServer.routes.size, 0)
   assert.doesNotThrow(() => mounted.dispose())
 })
 
-test('WO-05 ping returns the fixed shape with no-store JSON and supports HEAD', async () => {
+test('WO-05 ping is unchanged: fixed shape, no-store JSON, HEAD support', async () => {
   const mounted = mount({})
   const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.ping)
   assert.equal(res.statusCode, 200)
   assert.equal(res.headers['cache-control'], 'no-store')
   assert.equal(res.headers['content-type'], 'application/json; charset=utf-8')
   assert.equal(res.headers['x-content-type-options'], 'nosniff')
-  assert.equal(json.ok, true)
-  assert.equal(json.name, PLUGIN_NAME)
-  assert.equal(json.version, PLUGIN_VERSION)
+  assert.deepEqual(json, { ok: true, name: PLUGIN_NAME, version: PLUGIN_VERSION })
 
   const head = await invoke(mounted.webServer, ROUTE_PATHS.ping, { method: 'HEAD' })
   assert.equal(head.res.statusCode, 200)
@@ -218,10 +231,12 @@ test('WO-05 ping returns the fixed shape with no-store JSON and supports HEAD', 
 test('WO-06 rejects non-GET methods with 405 and an Allow header', async () => {
   const mounted = mount({})
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-    const { res } = await invoke(mounted.webServer, ROUTE_PATHS.workspaces, { method })
-    assert.equal(res.statusCode, 405, `${method} must be rejected`)
-    assert.equal(res.headers.allow, 'GET, HEAD')
-    assert.equal(res.ended, true)
+    for (const routePath of [ROUTE_PATHS.overview, ROUTE_PATHS.entry]) {
+      const { res } = await invoke(mounted.webServer, routePath, { method })
+      assert.equal(res.statusCode, 405, `${method} must be rejected on ${routePath}`)
+      assert.equal(res.headers.allow, 'GET, HEAD')
+      assert.equal(res.ended, true)
+    }
   }
   assert.equal(mounted.facade.calls.length, 0, 'guarded requests must not touch the facade')
   mounted.dispose()
@@ -230,9 +245,8 @@ test('WO-06 rejects non-GET methods with 405 and an Allow header', async () => {
 test('WO-07 the optional connection fence answers before routing', async () => {
   const connection = { requestRejection: (req) => (req.headers['x-fence'] === '1' ? 403 : undefined) }
   const mounted = mount({}, { connection })
-  const fenced = await invoke(mounted.webServer, ROUTE_PATHS.workspaces, { headers: { 'x-fence': '1' } })
+  const fenced = await invoke(mounted.webServer, ROUTE_PATHS.overview, { headers: { 'x-fence': '1' } })
   assert.equal(fenced.res.statusCode, 403)
-  assert.equal(fenced.facade, undefined)
   assert.equal(mounted.facade.calls.length, 0)
   const allowed = await invoke(mounted.webServer, ROUTE_PATHS.ping)
   assert.equal(allowed.res.statusCode, 200)
@@ -260,108 +274,216 @@ test('WO-08 rejects foreign Origin and cross-site Sec-Fetch-Site', async () => {
 })
 
 // ---------------------------------------------------------------------------
-// WO: payload contract
+// WO: global payload contract (no workspace parameter anywhere)
 // ---------------------------------------------------------------------------
 
-test('WO-09 workspaces payload is normalized and capped at 20', async () => {
-  const workspaces = []
-  for (let index = 0; index < 25; index += 1) {
-    const suffix = index.toString(16).padStart(16, '0')
-    workspaces.push({ key: `ws_${suffix}`, label: 'W' + String(index), canonicalPath: 'C:\\work\\' + String(index), entries: 3, openQuestions: 1, live: index === 0, extra: 'must not leak' })
-  }
-  workspaces[1].key = 'not-a-workspace-key'
-  workspaces[2].label = 'x'.repeat(400)
-  workspaces[3].entries = -7
-  const mounted = mount({ workspaces })
-  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.workspaces)
-  assert.equal(res.statusCode, 200)
-  assert.equal(json.ok, true)
-  assert.equal(json.workspaces.length, 20)
-  assert.ok(json.workspaces.every((workspace) => workspace.key !== 'not-a-workspace-key'))
-  assert.deepEqual(summaryKeys(json.workspaces[0]), ['canonicalPath', 'entries', 'key', 'label', 'live', 'openQuestions'])
-  assert.equal(json.workspaces[0].live, true)
-  assert.ok(json.workspaces[1].label.length <= 120 || json.workspaces[1].label.length > 0)
-  assert.ok(json.workspaces.every((workspace) => workspace.entries >= 0))
-  assert.equal(JSON.stringify(json).includes('must not leak'), false)
-  mounted.dispose()
-})
-
-test('WO-10 overview lists summaries only (no bodies/previews) and forwards filters', async () => {
-  const mounted = mount({
-    overview: {
-      workspace: { key: WS_KEY, label: 'solo-bench' },
-      entries: [{
+test('WO-09 overview serves one global timeline with provenance labels only', async () => {
+  const overview = {
+    // A stale/facade-supplied workspace header must never reach the panel.
+    scope: { key: 'ws_0123456789abcdef', label: 'leaky workspace' },
+    entries: [
+      {
         id: ENTRY_ID,
         seq: '01JBQ8Z4K1',
         kind: 'gotcha',
         title: 'Windows rename retries',
         authorTitle: 'Auth work',
+        workspaceLabel: 'D:\\05_Code\\solo-bench',
         ts: '2026-11-13T03:55:00.000Z',
         status: 'open',
         replyCount: 2,
         body: 'SECRET BODY',
         preview: 'SECRET PREVIEW',
         author: { sessionId: 'session-x' },
-      }],
-      stats: { total: 12, openQuestions: 2, openHandoffs: 1, unread: 3 },
-      peers: [{ title: 'Auth work', status: 'running', sessionId: 'session-x' }],
-      truncated: false,
-    },
-  })
+        ws: WS_KEY,
+      },
+      {
+        id: makeEntryId(2),
+        seq: '01JBQ8Z4K2',
+        kind: 'finding',
+        title: 'No direct label',
+        authorTitle: 'Data migration',
+        origin: { workspaceKey: WS_KEY, workspaceLabel: 'C:\\work\\auth-service' },
+        ts: '2026-11-13T03:56:00.000Z',
+        status: 'active',
+        replyCount: 0,
+      },
+      {
+        id: ENTRY_ID,
+        seq: '01JBQ8Z4K3',
+        kind: 'warning',
+        title: 'duplicate id must be dropped',
+        authorTitle: 'x',
+        ts: '2026-11-13T03:57:00.000Z',
+      },
+      {
+        id: 'tmb_01JBQ8Z4K1H9T2R6N4X7C0W8FD',
+        seq: '01JBQ8Z4K4',
+        kind: 'warning',
+        title: 'invalid id must be dropped',
+      },
+    ],
+    stats: { total: 12, openQuestions: 2, openHandoffs: 1, unread: 7 },
+    peers: [
+      { title: 'Auth work', status: 'running', sessionId: 'session-x', workspaceLabel: 'C:\\work\\auth-service' },
+      { title: 'Docs', status: 'idle', origin: { workspaceLabel: 'docs-site' } },
+      { title: '', status: 'running' },
+      { title: 'Odd status', status: 'weird' },
+    ],
+    truncated: true,
+  }
+  const mounted = mount({ overview })
+  // `ws` is a stale v0.1.0 query parameter: ignored, never forwarded.
   const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.overview, {
     query: { ws: WS_KEY, q: 'rename', kind: 'gotcha', limit: '10' },
   })
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(json.workspace, { key: WS_KEY, label: 'solo-bench' })
-  assert.deepEqual(summaryKeys(json.entries[0]), ['authorTitle', 'id', 'kind', 'replyCount', 'seq', 'status', 'title', 'ts'])
-  assert.equal(JSON.stringify(json).includes('SECRET'), false)
-  assert.deepEqual(json.stats, { total: 12, openQuestions: 2, openHandoffs: 1, unread: 3 })
-  assert.deepEqual(json.peers, [{ title: 'Auth work', status: 'running' }])
-  assert.equal(json.truncated, false)
-  assert.deepEqual(mounted.facade.calls[0], ['overview', WS_KEY, { q: 'rename', kind: 'gotcha', limit: 10 }])
+  assert.deepEqual(json.scope, { key: 'global', label: 'All sessions' })
+  assert.deepEqual(json.scope, PANEL_SCOPE)
+  assert.equal(json.entries.length, 2)
+  assert.deepEqual(json.entries[0], {
+    id: ENTRY_ID,
+    seq: '01JBQ8Z4K1',
+    kind: 'gotcha',
+    title: 'Windows rename retries',
+    authorTitle: 'Auth work',
+    workspaceLabel: 'solo-bench',
+    ts: '2026-11-13T03:55:00.000Z',
+    status: 'open',
+    replyCount: 2,
+  })
+  assert.deepEqual(summaryKeys(json.entries[0]), [
+    'authorTitle', 'id', 'kind', 'replyCount', 'seq', 'status', 'title', 'ts', 'workspaceLabel',
+  ])
+  assert.deepEqual(summaryKeys(json.entries[1]), [
+    'authorTitle', 'id', 'kind', 'replyCount', 'seq', 'status', 'title', 'ts', 'workspaceLabel',
+  ])
+  assert.equal(json.entries[1].workspaceLabel, 'auth-service')
+  assert.deepEqual(json.stats, { total: 12, openQuestions: 2, openHandoffs: 1, unread: 0 })
+  assert.deepEqual(json.peers, [
+    { title: 'Auth work', status: 'running', workspaceLabel: 'auth-service' },
+    { title: 'Docs', status: 'idle', workspaceLabel: 'docs-site' },
+    { title: 'Odd status', status: 'unknown' },
+  ])
+  assert.equal(json.truncated, true)
+  const serialized = JSON.stringify(json)
+  assert.equal(serialized.includes('SECRET'), false)
+  assert.equal(serialized.includes(WS_KEY), false, 'no workspace key may leak into the global payload')
+  assert.equal(serialized.includes('solo-bench\\'), false, 'labels are basenames only')
+  assert.equal(serialized.includes('C:\\\\work'), false, 'no absolute path may leak into the global payload')
+  assert.deepEqual(mounted.facade.calls[0], ['overview', { q: 'rename', kind: 'gotcha', limit: 10 }])
   mounted.dispose()
 })
 
-test('WO-11 overview validates the workspace key and maps facade errors', async () => {
+test('WO-10 overview forwards filters without a workspace and caps entries', async () => {
+  const entries = []
+  for (let index = 0; index < 60; index += 1) {
+    entries.push({
+      id: makeEntryId(index),
+      seq: '01JBQ8Z4K1',
+      kind: 'finding',
+      title: 't' + String(index),
+      authorTitle: 'Session',
+      ts: '2026-11-13T03:55:00.000Z',
+      status: 'active',
+      replyCount: 0,
+    })
+  }
+  const mounted = mount({ overview: { entries, stats: {}, peers: [], truncated: false } })
+
+  const defaults = await invoke(mounted.webServer, ROUTE_PATHS.overview)
+  assert.equal(defaults.res.statusCode, 200)
+  assert.equal(defaults.json.entries.length, 20, 'the default page size is 20')
+  assert.deepEqual(defaults.json.scope, { key: 'global', label: 'All sessions' })
+  assert.deepEqual(defaults.json.stats, { total: 0, openQuestions: 0, openHandoffs: 0, unread: 0 })
+  assert.deepEqual(defaults.json.peers, [])
+  assert.equal(defaults.json.truncated, true, 'dropping entries must be explicit')
+  assert.deepEqual(mounted.facade.calls[0], ['overview', { q: '', kind: undefined, limit: 20 }])
+  assert.equal(Object.prototype.hasOwnProperty.call(mounted.facade.calls[0][1], 'ws'), false)
+
+  const unknownKind = await invoke(mounted.webServer, ROUTE_PATHS.overview, { query: { kind: 'not-a-kind' } })
+  assert.equal(unknownKind.res.statusCode, 200)
+  assert.deepEqual(mounted.facade.calls[1], ['overview', { q: '', kind: undefined, limit: 20 }])
+
+  const capped = await invoke(mounted.webServer, ROUTE_PATHS.overview, { query: { limit: '9999' } })
+  assert.equal(capped.json.entries.length, 50)
+  assert.equal(capped.json.truncated, true)
+  assert.deepEqual(mounted.facade.calls[2], ['overview', { q: '', kind: undefined, limit: 50 }])
+
+  const floor = await invoke(mounted.webServer, ROUTE_PATHS.overview, { query: { limit: '0', q: 'x' } })
+  assert.deepEqual(mounted.facade.calls[3], ['overview', { q: 'x', kind: undefined, limit: 1 }])
+  assert.equal(floor.json.entries.length, 1)
+  mounted.dispose()
+})
+
+test('WO-11 overview maps facade rejections to stable panel errors', async () => {
   const mounted = mount({})
-  const missing = await invoke(mounted.webServer, ROUTE_PATHS.overview)
-  assert.equal(missing.res.statusCode, 400)
-  assert.equal(missing.json.error.code, 'CONFLUENCE_INVALID_ARGUMENT')
-
-  const malformed = await invoke(mounted.webServer, ROUTE_PATHS.overview, { query: { ws: 'ws_zzz' } })
-  assert.equal(malformed.res.statusCode, 404)
-  assert.equal(malformed.json.error.code, 'CONFLUENCE_NOT_FOUND')
-
-  const throwingFacade = createFacade()
-  throwingFacade.overview = async () => {
+  const unavailableFacade = createFacade()
+  unavailableFacade.overview = async () => {
     const error = new Error('store is unavailable')
     error.code = 'STORE_UNAVAILABLE'
     throw error
   }
-  const mountedThrowing = mount({}, { facade: throwingFacade })
-  const unavailable = await invoke(mountedThrowing.webServer, ROUTE_PATHS.overview, { query: { ws: WS_KEY } })
-  assert.equal(unavailable.res.statusCode, 503)
-  assert.equal(unavailable.json.error.code, 'CONFLUENCE_STORE_UNAVAILABLE')
+  const unavailable = mount({}, { facade: unavailableFacade })
+  const unavailableResult = await invoke(unavailable.webServer, ROUTE_PATHS.overview)
+  assert.equal(unavailableResult.res.statusCode, 503)
+  assert.equal(unavailableResult.json.error.code, 'CONFLUENCE_STORE_UNAVAILABLE')
+
+  const invalidFacade = createFacade()
+  invalidFacade.overview = async () => {
+    const error = new Error('bad filter')
+    error.code = 'BAD_ARGUMENT'
+    throw error
+  }
+  const invalid = mount({}, { facade: invalidFacade })
+  const invalidResult = await invoke(invalid.webServer, ROUTE_PATHS.overview)
+  assert.equal(invalidResult.res.statusCode, 400)
+  assert.equal(invalidResult.json.error.code, 'CONFLUENCE_INVALID_ARGUMENT')
 
   const genericFacade = createFacade()
   genericFacade.overview = async () => {
     throw new Error('unexpected\nfailure at C:\\secret\\path')
   }
-  const mountedGeneric = mount({}, { facade: genericFacade })
-  const failed = await invoke(mountedGeneric.webServer, ROUTE_PATHS.overview, { query: { ws: WS_KEY } })
+  const generic = mount({}, { facade: genericFacade })
+  const failed = await invoke(generic.webServer, ROUTE_PATHS.overview)
   assert.equal(failed.res.statusCode, 500)
   assert.equal(failed.json.error.code, 'CONFLUENCE_INTERNAL')
   assert.equal(failed.json.error.message.includes('\n'), false)
+
+  const nullFacade = createFacade()
+  nullFacade.overview = async () => null
+  const nullMounted = mount({}, { facade: nullFacade })
+  const nullResult = await invoke(nullMounted.webServer, ROUTE_PATHS.overview)
+  assert.equal(nullResult.res.statusCode, 503)
+  assert.equal(nullResult.json.error.code, 'CONFLUENCE_STORE_UNAVAILABLE')
+
+  const missingFacade = createFacade()
+  delete missingFacade.overview
+  const missing = mount({}, { facade: missingFacade })
+  const missingResult = await invoke(missing.webServer, ROUTE_PATHS.overview)
+  assert.equal(missingResult.res.statusCode, 503)
+
   mounted.dispose()
-  mountedThrowing.dispose()
-  mountedGeneric.dispose()
+  unavailable.dispose()
+  invalid.dispose()
+  generic.dispose()
+  nullMounted.dispose()
+  missing.dispose()
 })
 
-test('WO-12 entry returns body/tags/relative files and bounded replies', async () => {
+test('WO-12 entry is a global id lookup with body, relative files, provenance and bounded replies', async () => {
   const replies = []
   for (let index = 0; index < 60; index += 1) {
-    const idSuffix = index.toString(16).padStart(26, '0').toUpperCase()
-    replies.push({ id: `cnf_${idSuffix}`, seq: '01JBQ8Z4K2', body: 'reply ' + String(index), authorTitle: 'Data migration', ts: '2026-11-13T03:56:00.000Z' })
+    const reply = {
+      id: makeEntryId(index),
+      seq: '01JBQ8Z4K2',
+      body: 'reply ' + String(index),
+      authorTitle: 'Data migration',
+      ts: '2026-11-13T03:56:00.000Z',
+    }
+    if (index === 0) reply.workspaceLabel = 'C:\\work\\auth-service'
+    if (index === 1) reply.origin = { workspaceLabel: 'docs-site' }
+    replies.push(reply)
   }
   const mounted = mount({
     entry: {
@@ -374,25 +496,40 @@ test('WO-12 entry returns body/tags/relative files and bounded replies', async (
         tags: ['windows', 'WINDOWS', 'io'],
         files: ['D:\\work\\src\\win\\rename.ts', '\\\\server\\share\\x.ts', '../escape.ts', 'src/auth/index.ts'],
         authorTitle: 'Auth work',
+        workspaceLabel: 'C:\\work\\auth-service',
         ts: '2026-11-13T03:55:00.000Z',
         status: 'active',
+        origin: { workspaceKey: WS_KEY, workspaceLabel: 'must-not-win' },
       },
       replies,
     },
   })
-  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { ws: WS_KEY, id: ENTRY_ID } })
+  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.entry, {
+    query: { ws: WS_KEY, id: ENTRY_ID },
+  })
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(summaryKeys(json.entry), ['authorTitle', 'body', 'files', 'id', 'kind', 'seq', 'status', 'tags', 'title', 'ts'])
+  assert.deepEqual(mounted.facade.calls[0], ['entry', ENTRY_ID])
+  assert.deepEqual(summaryKeys(json.entry), [
+    'authorTitle', 'body', 'files', 'id', 'kind', 'seq', 'status', 'tags', 'title', 'ts', 'workspaceLabel',
+  ])
+  assert.equal(json.entry.workspaceLabel, 'auth-service')
   assert.equal(json.entry.body.includes('\u0000'), false)
   assert.equal(json.entry.body.includes('\n'), true)
   assert.deepEqual(json.entry.tags, ['windows', 'io'])
   assert.deepEqual(json.entry.files, ['work/src/win/rename.ts', 'src/auth/index.ts'])
   assert.equal(json.replies.length, 50)
-  assert.deepEqual(summaryKeys(json.replies[0]), ['authorTitle', 'body', 'id', 'seq', 'ts'])
+  assert.deepEqual(summaryKeys(json.replies[0]), ['authorTitle', 'body', 'id', 'seq', 'ts', 'workspaceLabel'])
+  assert.equal(json.replies[0].workspaceLabel, 'auth-service')
+  assert.deepEqual(summaryKeys(json.replies[1]), ['authorTitle', 'body', 'id', 'seq', 'ts', 'workspaceLabel'])
+  assert.equal(json.replies[1].workspaceLabel, 'docs-site')
+  assert.deepEqual(summaryKeys(json.replies[2]), ['authorTitle', 'body', 'id', 'seq', 'ts'])
+  const serialized = JSON.stringify(json)
+  assert.equal(serialized.includes(WS_KEY), false)
+  assert.equal(serialized.includes('C:\\\\work'), false)
   mounted.dispose()
 })
 
-test('WO-13 missing or malformed entry ids return 404', async () => {
+test('WO-13 missing or malformed entry ids return 400/404', async () => {
   const mounted = mount({})
   const missing = await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { ws: WS_KEY } })
   assert.equal(missing.res.statusCode, 400)
@@ -406,12 +543,11 @@ test('WO-13 missing or malformed entry ids return 404', async () => {
   mounted.dispose()
 })
 
-test('WO-14 enforces the 64 KiB response cap with explicit truncation', async () => {
+test('WO-14 entry route enforces the 64 KiB cap with explicit truncation', async () => {
   const bigReplies = []
   for (let index = 0; index < 50; index += 1) {
-    const idSuffix = index.toString(16).padStart(26, '0').toUpperCase()
     bigReplies.push({
-      id: `cnf_${idSuffix}`,
+      id: makeEntryId(index),
       seq: '01JBQ8Z4K2',
       body: 'r'.repeat(4096),
       authorTitle: 'Session',
@@ -435,7 +571,7 @@ test('WO-14 enforces the 64 KiB response cap with explicit truncation', async ()
       replies: bigReplies,
     },
   })
-  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { ws: WS_KEY, id: ENTRY_ID } })
+  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { id: ENTRY_ID } })
   assert.equal(res.statusCode, 200)
   assert.ok(Buffer.byteLength(res.body, 'utf8') <= MAX_RESPONSE_BYTES, 'response must stay under the cap')
   assert.ok(json.entry.body.length < 200_000)
@@ -443,29 +579,60 @@ test('WO-14 enforces the 64 KiB response cap with explicit truncation', async ()
   mounted.dispose()
 })
 
-test('WO-15 only read facade methods are called (no mutation surface)', async () => {
-  const workspaces = [{ key: WS_KEY, label: 'solo', canonicalPath: 'C:\\solo', entries: 1, openQuestions: 0, live: true }]
-  const mounted = mount({
-    workspaces,
-    overview: { workspace: { key: WS_KEY, label: 'solo' }, entries: [], stats: {}, peers: [], truncated: false },
-    entry: { entry: null, replies: [] },
-  })
-  await invoke(mounted.webServer, ROUTE_PATHS.workspaces)
-  await invoke(mounted.webServer, ROUTE_PATHS.overview, { query: { ws: WS_KEY } })
-  await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { ws: WS_KEY, id: ENTRY_ID } })
+test('WO-15 only the two global read facade methods are called (no workspace listing, no writes)', async () => {
+  const calls = []
+  const facade = {
+    calls,
+    async overview(requested) {
+      calls.push(['overview', requested])
+      return emptyOverview()
+    },
+    async entry(id) {
+      calls.push(['entry', id])
+      return { entry: null, replies: [] }
+    },
+    async listWorkspaces() {
+      calls.push(['listWorkspaces'])
+      throw new Error('must not be called')
+    },
+    async post() {
+      calls.push(['post'])
+      throw new Error('write method must not be called')
+    },
+  }
+  const mounted = mount({}, { facade })
+  await invoke(mounted.webServer, ROUTE_PATHS.ping)
+  await invoke(mounted.webServer, ROUTE_PATHS.overview)
+  await invoke(mounted.webServer, ROUTE_PATHS.entry, { query: { id: ENTRY_ID } })
   const methods = new Set(mounted.facade.calls.map((call) => call[0]))
-  assert.deepEqual([...methods].sort(), ['entry', 'listWorkspaces', 'overview'])
+  assert.deepEqual([...methods].sort(), ['entry', 'overview'])
   mounted.dispose()
 })
 
-test('WO-16 workspaces non-array facade result degrades to 503', async () => {
-  const facade = createFacade()
-  facade.listWorkspaces = async () => undefined
-  const mounted = mount({}, { facade })
-  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.workspaces)
-  assert.equal(res.statusCode, 503)
-  assert.equal(json.error.code, 'CONFLUENCE_STORE_UNAVAILABLE')
-  mounted.dispose()
+test('WO-16 invalid facade shapes degrade to stable errors, never a crash', async () => {
+  const nullFacade = createFacade()
+  nullFacade.overview = async () => null
+  const nullMounted = mount({}, { facade: nullFacade })
+  const nullResult = await invoke(nullMounted.webServer, ROUTE_PATHS.overview)
+  assert.equal(nullResult.res.statusCode, 503)
+  assert.equal(nullResult.json.error.code, 'CONFLUENCE_STORE_UNAVAILABLE')
+
+  const listFacade = createFacade()
+  listFacade.overview = async () => []
+  const listMounted = mount({}, { facade: listFacade })
+  const listResult = await invoke(listMounted.webServer, ROUTE_PATHS.overview)
+  assert.equal(listResult.res.statusCode, 200)
+  assert.deepEqual(listResult.json.entries, [])
+
+  const badEntryFacade = createFacade()
+  badEntryFacade.entry = async () => ({ entry: 'not-an-object', replies: [] })
+  const badEntry = mount({}, { facade: badEntryFacade })
+  const badEntryResult = await invoke(badEntry.webServer, ROUTE_PATHS.entry, { query: { id: ENTRY_ID } })
+  assert.equal(badEntryResult.res.statusCode, 404)
+
+  nullMounted.dispose()
+  listMounted.dispose()
+  badEntry.dispose()
 })
 
 test('WO-17 logger failures never break a response', async () => {
@@ -484,28 +651,74 @@ test('WO-17 logger failures never break a response', async () => {
     },
   }
   const mounted = mount({}, { logger: throwingLogger })
-  const { res, json } = await invoke(mounted.webServer, ROUTE_PATHS.ping)
-  assert.equal(res.statusCode, 200)
-  assert.equal(json.ok, true)
+  const ping = await invoke(mounted.webServer, ROUTE_PATHS.ping)
+  assert.equal(ping.res.statusCode, 200)
+  const overview = await invoke(mounted.webServer, ROUTE_PATHS.overview)
+  assert.equal(overview.res.statusCode, 200)
   mounted.dispose()
 })
 
-test('WO-18 internal helpers keep file hints workspace-relative only', () => {
+test('WO-18 helpers keep provenance to basenames and enforce the global payload contract', () => {
   assert.equal(hostuiInternals.cleanRelativePath('D:\\work\\src\\a.ts'), 'work/src/a.ts')
   assert.equal(hostuiInternals.cleanRelativePath('/work/src/b.ts'), 'work/src/b.ts')
   assert.equal(hostuiInternals.cleanRelativePath('\\\\server\\share\\c.ts'), '')
   assert.equal(hostuiInternals.cleanRelativePath('../d.ts'), '')
   assert.equal(hostuiInternals.cleanRelativePath('src\\..\\e.ts'), '')
   assert.equal(hostuiInternals.cleanRelativePath('src/f.ts'), 'src/f.ts')
+
+  assert.equal(hostuiInternals.cleanProvenanceLabel('C:\\work\\auth-service'), 'auth-service')
+  assert.equal(hostuiInternals.cleanProvenanceLabel('/home/me/docs-site'), 'docs-site')
+  assert.equal(hostuiInternals.cleanProvenanceLabel('solo-bench'), 'solo-bench')
+  assert.equal(hostuiInternals.cleanProvenanceLabel(''), '')
+  assert.equal(hostuiInternals.cleanProvenanceLabel('..'), '')
+
+  const withOrigin = hostuiInternals.normalizeEntrySummary({
+    id: ENTRY_ID,
+    seq: 's',
+    kind: 'finding',
+    title: 't',
+    ts: '2026-11-13T03:55:00.000Z',
+    origin: { workspaceKey: WS_KEY, workspaceLabel: 'C:\\work\\auth-service' },
+  })
+  assert.equal(withOrigin.workspaceLabel, 'auth-service')
+  const withoutOrigin = hostuiInternals.normalizeEntrySummary({
+    id: ENTRY_ID,
+    seq: 's',
+    kind: 'finding',
+    title: 't',
+    ts: '2026-11-13T03:55:00.000Z',
+  })
+  assert.equal(Object.prototype.hasOwnProperty.call(withoutOrigin, 'workspaceLabel'), false)
+  assert.deepEqual(hostuiInternals.normalizeStats({ unread: 9, total: 4 }), {
+    total: 4,
+    openQuestions: 0,
+    openHandoffs: 0,
+    unread: 0,
+  })
+  assert.deepEqual(hostuiInternals.normalizePeers([{ title: 'p', status: 'running', workspaceLabel: 'C:\\x\\y' }]), [
+    { title: 'p', status: 'running', workspaceLabel: 'y' },
+  ])
+
   const oversized = hostuiInternals.fitPayload('overview', {
     ok: true,
-    workspace: { key: WS_KEY, label: 'big' },
-    entries: Array.from({ length: 50 }, (_, index) => ({ id: `cnf_${String(index).padStart(26, '0').toUpperCase()}`, title: 't'.repeat(200), seq: '', kind: 'finding', authorTitle: 'a', ts: '', status: 'active', replyCount: 0 })),
+    scope: { key: 'global', label: 'All sessions' },
+    entries: Array.from({ length: 50 }, (_, index) => ({
+      id: makeEntryId(index),
+      seq: '',
+      kind: 'finding',
+      title: 't'.repeat(200),
+      authorTitle: 'a',
+      ts: '',
+      status: 'active',
+      replyCount: 0,
+    })),
     stats: {},
     peers: [],
     truncated: false,
   })
   assert.ok(Buffer.byteLength(JSON.stringify(oversized.payload), 'utf8') <= MAX_RESPONSE_BYTES)
+  assert.equal(Object.prototype.hasOwnProperty.call(oversized.payload, 'workspace'), false)
+  assert.equal(hostuiInternals.ROUTES.map((route) => route.name).sort().join(','), 'entry,overview,ping')
 })
 
 // ---------------------------------------------------------------------------
@@ -608,18 +821,15 @@ test('UI-01 client.js loads through the ModuleLoader and registers locale + both
 
   const rail = harness.registered.find((record) => record.definition.name === 'sidebar.panellist')
   assert.ok(rail !== undefined)
-  assert.equal(rail.definition.name, 'sidebar.panellist')
   assert.equal(rail.definition.id, 'confluence')
   assert.equal(rail.definition.order, 30)
   assert.equal(rail.definition.locale, 'confluence')
-  assert.equal(typeof rail.definition.label, 'function')
   assert.equal(rail.definition.label(), 'Confluence')
 
   const main = harness.registered.find((record) => record.definition.name === 'main')
   assert.ok(main !== undefined)
   assert.equal(main.definition.key, 'confluence')
   assert.equal(main.definition.locale, 'confluence')
-  assert.equal(typeof main.definition.inject, 'function')
   const injectedProps = main.definition.inject()
   assert.equal(typeof injectedProps.t, 'function')
   assert.equal(typeof injectedProps.closePanel, 'function')
@@ -633,16 +843,32 @@ test('UI-01 client.js loads through the ModuleLoader and registers locale + both
   assert.deepEqual(harness.effectLabels, ['dsh-confluence:locale'])
 })
 
-test('UI-02 client.js is offline, read-only and dependency-free by static scan', () => {
+test('UI-02 client.js is offline, read-only, global-scope only and dependency-free', () => {
   const source = CLIENT_SOURCE
   // The real call site (anchored; comments may mention the loader without calling it).
   assert.equal((source.match(/^window\.__ModuleLoader__\.load\(/gm) ?? []).length, 1)
   assert.equal(source.includes("id: 'dsh-confluence'"), true)
-  // Exactly one fetch call site; it is the relative route adapter.
+  // Exactly one fetch call site; it is the single relative route adapter (polling).
   assert.equal((source.match(/\bfetch\(/g) ?? []).length, 1)
+  assert.equal(source.includes('fetch(ROUTE_BASE'), true)
   assert.equal(source.includes("credentials: 'same-origin'"), true)
   assert.equal(source.includes("cache: 'no-store'"), true)
+  assert.equal(source.includes("method: 'GET'"), true)
+  assert.equal(source.includes("method: 'POST'"), false)
   assert.match(source, /const ROUTE_BASE = '\/confluence\/panel'/)
+  assert.match(source, /const POLL_MS = 5000/)
+  assert.match(source, /visibilityState/)
+  // Universal scope: no workspace switcher, listing or workspace parameter.
+  assert.equal(source.includes("'/workspaces'"), false)
+  assert.equal(source.includes('api.workspaces'), false)
+  assert.equal(source.includes('workspaceKey'), false)
+  assert.equal(source.includes('/confluence/panel/workspaces'), false)
+  assert.doesNotMatch(source, /\bws\s*:/)
+  // Global rendering contract: fixed bilingual title, host scope label, provenance chip.
+  assert.equal(source.includes("PANEL_TITLE = '汇流记忆 / Confluence memory'"), true)
+  assert.equal(source.includes('scope.label'), true)
+  assert.equal(source.includes('cf-workspace'), true)
+  assert.equal(source.includes('entry.workspaceLabel'), true)
   for (const forbidden of [
     'http://',
     'https://',
@@ -670,23 +896,18 @@ test('UI-02 client.js is offline, read-only and dependency-free by static scan',
   assert.doesNotMatch(source, /#[0-9a-fA-F]{3,8}\b/)
   assert.doesNotMatch(source, /\b(?:rgb|hsl)a?\(/)
   assert.equal(source.includes('currentColor'), true)
-  assert.match(source, /const POLL_MS = 5000/)
-  assert.match(source, /visibilityState/)
 })
 
-test('UI-03 locale dictionary matches the shipped locale inventory and covers every used key', () => {
+test('UI-03 locale dictionaries cover every used key and stay inside the shipped inventory', () => {
   const harness = createClientHarness()
   const definition = loadClientDefinition()
   definition.factory(() => harness.reactShim).apply(harness.ctx)
   const dictionaries = harness.localeRegistrations[0].dictionaries
-  const hostEn = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'en.json'), 'utf8')).ui
-  const hostZh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8')).ui
-  // ui.md §5 parity: the client dictionary is the flattened locale `ui` object.
-  assert.deepEqual(JSON.parse(JSON.stringify(dictionaries.en)), hostEn)
-  assert.deepEqual(JSON.parse(JSON.stringify(dictionaries.zh)), hostZh)
+  const enKeys = Object.keys(dictionaries.en).sort()
+  const zhKeys = Object.keys(dictionaries.zh).sort()
+  assert.deepEqual(enKeys, zhKeys, 'inline en/zh dictionaries must expose the same keys')
+
   const rawKeys = [...CLIENT_SOURCE.matchAll(/\bt\('([^']+)'/g)].map((match) => match[1])
-  // Static keys only: `kind.` is dynamically concatenated with a closed kind list,
-  // and prose/comments containing t('…') are not dictionary lookups.
   const usedKeys = new Set()
   for (const key of rawKeys) {
     if (/^[A-Za-z][A-Za-z0-9.-]*$/.test(key) === false) continue
@@ -703,6 +924,16 @@ test('UI-03 locale dictionary matches the shipped locale inventory and covers ev
   const missingZh = [...usedKeys].filter((key) => typeof dictionaries.zh[key] !== 'string' || dictionaries.zh[key] === '')
   assert.deepEqual(missingEn, [], 'missing English strings: ' + missingEn.join(', '))
   assert.deepEqual(missingZh, [], 'missing Chinese strings: ' + missingZh.join(', '))
+
+  // Packaging owns locale/*.json: v0.2.0 introduces no new key, so every key the
+  // client uses (and registers) must already exist in the shipped inventory.
+  const hostEn = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'en.json'), 'utf8')).ui
+  const hostZh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8')).ui
+  const outsideInventory = [...usedKeys].filter((key) => !(key in hostEn) || !(key in hostZh))
+  assert.deepEqual(outsideInventory, [], 'locale keys must be added by packaging first: ' + outsideInventory.join(', '))
+  const inlineOutsideInventory = enKeys.filter((key) => !(key in hostEn) || !(key in hostZh))
+  assert.deepEqual(inlineOutsideInventory, [])
+
   // Placeholder consistency: keys used with params must keep them in both languages.
   assert.match(dictionaries.en['peers.live'], /\{n\}/)
   assert.match(dictionaries.zh['peers.live'], /\{n\}/)
@@ -712,13 +943,40 @@ test('UI-03 locale dictionary matches the shipped locale inventory and covers ev
   assert.match(dictionaries.zh['detail.provenance'], /\{author\}/)
   assert.match(dictionaries.en.updatedAt, /\{time\}/)
   assert.match(dictionaries.zh.updatedAt, /\{time\}/)
+  assert.match(dictionaries.en['state.stale'], /\{time\}/)
+  assert.match(dictionaries.zh['state.stale'], /\{time\}/)
 })
 
 test('UI-04 client.js parses in the ModuleLoader sandbox and tolerates missing slots', () => {
   const definition = loadClientDefinition()
   const harness = createClientHarness()
   const moduleValue = definition.factory(() => harness.reactShim)
-  // A degraded host page without a slot registry must not throw.
   assert.doesNotThrow(() => moduleValue.apply({ locale: undefined, layout: undefined, slots: undefined, effect: undefined }))
   assert.doesNotThrow(() => moduleValue.apply({}))
+})
+
+test('UI-05 the registered page renders the global timeline chrome (no workspace switcher)', () => {
+  const definition = loadClientDefinition()
+  const harness = createClientHarness()
+  definition.factory(() => harness.reactShim).apply(harness.ctx)
+  const main = harness.registered.find((record) => record.definition.name === 'main')
+  assert.equal(typeof main.component, 'function')
+
+  // No effects run in the shim, so this is the loading phase: header, toolbar and
+  // footer render without any data request (the single fetch stays in effects).
+  const tree = main.component({
+    t: (key) => 'T:' + key,
+    closePanel: () => {},
+  })
+  assert.equal(tree.type, 'element')
+  assert.equal(tree.args[0], 'section')
+  const serialized = JSON.stringify(tree)
+  assert.equal(serialized.includes('汇流记忆 / Confluence memory'), true)
+  assert.equal(serialized.includes('T:panel.subtitle'), true)
+  assert.equal(serialized.includes('T:search.label'), true)
+  assert.equal(serialized.includes('T:questions.open'), true)
+  assert.equal(serialized.includes('T:peers.none'), true)
+  assert.equal(serialized.includes('T:state.loading'), true)
+  assert.equal(serialized.includes('<select'), false)
+  assert.equal(serialized.includes('aria-busy'), true)
 })

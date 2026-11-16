@@ -11,6 +11,19 @@ Scope: `v1` directory layout. The M4 surface (compaction, export) is specified h
 built against it, but it is implemented last. No server, no network, no child process, no database:
 Node builtins (`node:fs`, `node:path`, `node:crypto`, `node:os`) only.
 
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md),
+> delta §2).** The file family and merge algorithm are unchanged, but new writes go to **one reserved
+> global scope** `workspaces/ws_0000000000000000/` (label "All sessions"); the manifest's
+> `workspace.canonicalPath` is empty **only** for that key. Legacy v0.1.0 per-workspace journals
+> remain on disk byte-for-byte and are **merged read-only** into every view (`legacyWorkspaceMeta()`,
+> `legacyView()`, `mergedRecords()`); there is no migration writer and no deletion. A legacy writer
+> process from an older plugin version still appends to its own shard — harmless, merged on read. The
+> export no longer lives inside a workspace: it defaults to
+> `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/` and is written outside the store root. Where
+> this document says "per workspace", "workspace directory" or `<wsKey>`, read "the global scope" for
+> writes and "a legacy scope, read-only" for older data. Binding delta:
+> [`../plan/scope-refactor-delta.md`](../plan/scope-refactor-delta.md).
+
 ## 1. Guarantees (the contract)
 
 The store promises, and the conformance tests in §16 encode:
@@ -49,21 +62,23 @@ workspace-relative only (config.md §2.8, ADR 0001 §17 E3); a rooted value is r
 ```text
 $DSH_HOME/storages/confluence/v1/
   workspaces/
-    ws_<16hex>/                          # one directory per workspace key (data-model §2.1)
-      MANIFEST.v1.json                   # optional in v1-core; written at first mount, rewritten by compaction
+    ws_0000000000000000/                 # v0.2.0: THE global scope (reserved, never a real workspace key)
+      MANIFEST.v1.json                   # written at first mount; label "All sessions"
       journal.<writerId>.v1.jsonl        # append-only shard, one writer per file
       snapshot.<gen>.v1.jsonl            # M4 only: compacted sorted records, gen >= 1
       presence/
         <writerId>.json                  # heartbeat file, replaced atomically
         .tmp-<writerId>.json             # transient during a replace; ignored by readers
+    ws_<16hex>/                          # v0.1.0 legacy scopes: NEVER written or modified in v0.2.0,
+      ...                                # only scanned and merged read-only (data-model §2.1)
   leases/                                # transient control files, M4; never data, never merged
     <wsKey>.compact.lock
     <wsKey>.export.lock
   .tmp/                                  # only transient temp files, always writer-suffixed and ignored by readers
 ```
 
-The export never lives under the store root: it is written into the workspace
-(`<workspace>/<export.dir>`, §14), the only workspace files the plugin ever creates.
+The export never lives under the store root and (v0.2.0) never inside a workspace either: its default
+root is `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/` (§14); `--out` may override it.
 
 Rules:
 
@@ -75,7 +90,8 @@ Rules:
   name contains its own writer id, and mints a new writer id per mount (ADR 0001 §6).
 - Modes: files `0o600`, directories `0o700` on POSIX; mode is best-effort on Windows.
 - The store is profile-local presentation-independent data, never inside a repository by default.
-  The only files that ever live in a workspace are the opt-in M4 export (§14).
+  In v0.2.0 the plugin creates no files inside any workspace at all (only the opt-in export, whose
+  default root is under `$DSH_HOME`).
 
 Naming regexes:
 
@@ -114,16 +130,16 @@ incomplete tail (§6).
 
 ### 5.1 Writer lifecycle
 
-- First append for a workspace lazily: `mkdir -p workspaces/<wsKey>/presence`, open
+- First append lazily: `mkdir -p workspaces/ws_0000000000000000/presence`, open
   `journal.<writerId>.v1.jsonl` with `fs.openSync(path, 'a')` (`O_APPEND`), keep the fd.
-- All appends for that workspace go through the same fd, sequentially on the JS thread. Because the
+- All appends for the global scope go through the same fd, sequentially on the JS thread. Because the
   file is opened `O_APPEND`, each `fs.writeSync(fd, line)` is one append at the current EOF; a
   complete line is written by one call (≤64 KiB), so lines never interleave even if another writer
   somehow shared the name.
 - A write of a complete line never happens before the record passed validation (`data-model.md`
   §8.1); failed validation costs no I/O.
 - `writerId` is minted once per plugin mount; the same shard receives all appends from this process
-  for this workspace. On restart a new writer id starts a new shard.
+  for this universal scope. On restart a new writer id starts a new shard.
 
 Refinement of ADR 0001 §6 (`fs.appendFile`): a held `O_APPEND` fd + `fs.writeSync` is the same
 append semantics, but it lets the plugin batch `fsync` (§5.2) and close the fd synchronously during
@@ -293,8 +309,9 @@ poll interval; the refresh is skipped if a previous one is still running (single
 
 ## 10. Presence protocol
 
-- Each plugin instance maintains one heartbeat file per workspace in which it currently has at least
-  one live/idle non-private session: `presence/<writerId>.json` (schema in data-model §4.6).
+- Each plugin instance maintains one heartbeat file for the universal shared-memory scope (not one per
+  workspace): `presence/<writerId>.json` under `workspaces/ws_0000000000000000/` (schema in
+  data-model §4.6).
 - Cadence: on every `turn/end` and at least every `PRESENCE_HEARTBEAT_MS` (10 s) while active.
   Content: writer id, pid, plugin version, `updatedAt`, sorted session ids. Never titles, bodies,
   file paths or prompts.
@@ -407,13 +424,15 @@ Residual prune race: specified and accepted in §13.4.
 ### 13.3 Export steps (M4)
 
 1. `acquire(wsKey, 'export')`; if busy, return a "busy, try again" result to the user command.
+   v0.2.0 acquires on the global scope key.
 2. Merge (not compact; export never writes into the store) + filter: visible entries (tombstoned ones
-   become content-free `deleted` stubs), retention window, redacted title/body/tags, workspace-relative
-   file hints, `origin`/author provenance, derived `status`.
+   become content-free `deleted` stubs), retention window, redacted title/body/tags, relative file
+   hints, `origin`/author provenance, derived `status`.
 3. Sort by `(seq, id)`; build `memories.v1.jsonl` in memory; refuse (or set `limits.truncated`) if
    > `EXPORT_MAX_BYTES` (8 MiB).
-4. Resolve `<workspace>/<config.export.dir>` (default `.confluence/export`, workspace-relative only;
-   reject rooted/`..` values and any target inside the store root). `mkdir -p`.
+4. Resolve the output directory: default `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`, or the
+   explicit `--out` value; reject a target inside the store root and refuse to overwrite an unrelated
+   non-empty directory. `mkdir -p`.
 5. Write `memories.v1.jsonl.tmp-<writerId>`, `fsync`, `rename` over `memories.v1.jsonl`; build
    `manifest.json` with the schema, file hash/bytes/counts/seq range, then write
    `manifest.json.tmp-<writerId>`, `fsync`, `rename` over `manifest.json` **last** (the manifest is
@@ -434,12 +453,14 @@ compaction risk; conformance test §17.27 simulates it (append after publish →
 The export is the only contract `solo-bench` is expected to consume (ADR 0001 §13). Final naming is
 the Lead ruling on plan deviation (b): the export is `memories.v1.jsonl` plus `manifest.json` with
 `{"schema":"confluence.memories/v1","formatVersion":1,...}`. The store's own `MANIFEST.v1.json` (§15)
-is a different file with a different purpose. The export path is **workspace-relative only** (ADR
-0001 §17 E3): `<workspace>/.confluence/export/` by default, `export.dir` may only narrow it inside
-the workspace.
+is a different file with a different purpose. **v0.2.0:** the export is global — the manifest adds
+`scope:"global"`, reports the reserved global `wsKey`, and every record uses that key; the optional
+additive `origin:{workspaceKey?, workspaceLabel?}` carries provenance (unknown fields are ignored by
+v1 consumers). Default output: `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`; `--out` may
+override it. Everything stays inside the profile.
 
 ```text
-<workspace>/<export.dir>/            # default .confluence/export/ (workspace-relative only, E3)
+$DSH_HOME/storages/confluence-exports/<UTC-stamp>/   # default; --out may override
   memories.v1.jsonl                  # one record per line, UTF-8, LF, ≤64 KiB per line
   manifest.json                      # commit marker: written last, atomically
 ```
@@ -450,9 +471,10 @@ the workspace.
 {
   "schema": "confluence.memories/v1",
   "formatVersion": 1,
-  "producer": { "name": "dsh-confluence", "version": "0.1.0", "dsh": "0.2.2-rc.1" },
-  "generatedAt": "2026-11-13T03:10:00.000Z",
-  "workspace": { "wsKey": "ws_3f9a1c7e2b4d8061", "name": "solo-bench" },
+  "scope": "global",
+  "producer": { "name": "dsh-confluence", "version": "0.2.0", "dsh": "0.2.2-rc.1" },
+  "generatedAt": "2026-11-16T03:10:00.000Z",
+  "workspace": { "wsKey": "ws_0000000000000000", "name": "All sessions" },
   "recordCount": 38,
   "firstSeq": "01JBQ8Z4K2V7R3N5T6X1Y8M0PQ",
   "lastSeq": "01JBQ8Z4K6D3E1G4J8F5X9Q7S2",
@@ -468,12 +490,14 @@ fields are additive and ignored by readers; repeated exports of an unchanged sto
 except for the manifest `generatedAt`/`files[].sha256`:
 
 ```json
-{"v":1,"schema":"confluence.memories/v1","type":"entry","id":"cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD","wsKey":"ws_3f9a1c7e2b4d8061","seq":"01JBQ8Z4K2V7R3N5T6X1Y8M0PQ","ts":"2026-11-13T02:41:07.512Z","kind":"gotcha","title":"Windows rename retries wrap in EPERM","body":"spawnSync rename throws EPERM when a scanner holds the handle.","tags":["windows","fs"],"files":["src/fs/rename.ts"],"author":{"sessionId":"session-23da4b81-7f0e-4c2a-9d55-1e8f0a6b7c91","title":"Auth work","origin":"agent"},"replyTo":null,"resolves":null,"supersedes":null,"deleted":false,"deletedAt":null}
+{"v":1,"schema":"confluence.memories/v1","type":"entry","id":"cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD","wsKey":"ws_0000000000000000","seq":"01JBQ8Z4K2V7R3N5T6X1Y8M0PQ","ts":"2026-11-16T02:41:07.512Z","kind":"gotcha","title":"Windows rename retries wrap in EPERM","body":"spawnSync rename throws EPERM when a scanner holds the handle.","tags":["windows","fs"],"files":["src/fs/rename.ts"],"author":{"sessionId":"session-23da4b81-7f0e-4c2a-9d55-1e8f0a6b7c91","title":"Auth work","origin":"agent"},"origin":{"workspaceKey":"ws_3f9a1c7e2b4d8061","workspaceLabel":"solo-bench"},"replyTo":null,"resolves":null,"supersedes":null,"deleted":false,"deletedAt":null}
 ```
 
 Mapping from stored records to export records:
 
-- `entry` → one export record: board id unchanged (`cnf_…`, data-model §2.2), `ws` → `wsKey`;
+- `entry` → one export record: board id unchanged (`cnf_…`, data-model §2.2), `wsKey` = the **global**
+  constant for every record, `origin` = optional additive provenance `{workspaceKey?, workspaceLabel?}`
+  (labels are basenames, never paths; unknown fields are ignored by v1 consumers);
   stored ISO `ts` → RFC 3339 `ts`; flat `sessionId`/`sessionTitle`/`origin` → the `author` object;
   `resolves:true` (boolean, stored per data-model §4.1) → `resolves: <replyTo id>` (the entry it
   resolves); `resolves:false` → `resolves: null`; absent `replyTo`/`supersedes` → `null`.
@@ -586,7 +610,7 @@ import; the no-egress/static test below enforces that).
 
 5. Append 3 records → a fresh reader sees exactly those 3, in `seq` order.
 6. Two-writer byte-level simulation: two real appender processes each append 100 records to their
-   own shard in the same workspace (fixture clock/random make the bytes predictable). Assert on
+   own shard in the same universal scope (fixture clock/random make the bytes predictable). Assert on
    bytes: every shard file consists only of complete `\n`-terminated lines; no line is ever split or
    interleaved with another writer's bytes (per-writer file + one write per complete line makes
    intra-line interleaving impossible by construction); and the merged view equals the 200-record
@@ -655,9 +679,11 @@ import; the no-egress/static test below enforces that).
     the naive check. Also: export twice over an unchanged store → identical bytes; `manifest.json`
     differs only in `generatedAt`/`files[0].sha256`; ordering `(seq,id)`; paths workspace-relative;
     field allow-list holds.
-29. Export refuses a rooted/`..` `export.dir` (workspace-relative only, ADR 0001 §17 E3), refuses to
-    write inside the store root, and never writes partial files (temp+rename verified; a kill between
-    the two renames leaves no new manifest or a mismatched one, both detectable).
+29. Export writes only outside the store root (default
+    `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`; v0.2.0 no longer writes into a workspace),
+    refuses to write inside the store root, and never writes partial files (temp+rename verified; a
+    kill between the two renames leaves no new manifest or a mismatched one, both detectable). The
+    manifest carries `scope:"global"` and the global `wsKey`; records may carry additive `origin`.
 30. Store `MANIFEST.v1.json` missing/corrupt → reader works from shards; invalid snapshot ignored;
     `generation` treated as unknown. The export `manifest.json` is a different file (§14).
 
@@ -679,7 +705,8 @@ import; the no-egress/static test below enforces that).
     scoped to the caller's key; an entry from the other workspace never appears (including through
     recall refs).
 37. Ids: an entry id is `cnf_` + 26-char ULID, a tombstone id is `tmb_` + ULID; `replyTo`/`supersedes`
-    point at ids in the same workspace; a duplicate id is deterministic (first-wins).
+    point at ids in the same shared-memory scope (the whole profile in v0.2.0); a duplicate id is
+    deterministic (first-wins).
 38. Cursor tolerance: `through=` (empty) is ignored; `through=<26-char ULID>` folds to
     `boardReadSeq`; the empty-board sentinel `seq="0"` marks the session welcomed without unread
     entries; `New:`/`unread` equal visible entries with `seq > boardReadSeq`.

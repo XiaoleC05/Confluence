@@ -1,29 +1,31 @@
-// Confluence / 汇流 — Host plugin entry (v0.1.0 implementation).
+// Confluence / 汇流 — Host plugin entry (v0.2.0 universal memory scope).
 //
-// Wires the modules described by the binding design (docs/adr/0001-*.md,
-// docs/plan/implementation-interfaces.md) onto the live Cordis context:
+// Wires the modules onto the live Cordis context. v0.2.0 scope decision
+// (ADR-0007): memory is UNIVERSAL per DSH profile — every session, in every
+// workspace, reads and writes the same shared memory. Workspace/session are
+// provenance only. A read-only merge of legacy v1 per-workspace journals keeps
+// old memories visible; no migration writes.
 //
-//   config -> workspace resolver -> journal store -> board
+//   config -> origin resolver (provenance) -> global journal store -> board
 //          -> ledger / presence -> watermark -> pulse
 //          -> facade -> six model tools
 //          -> read-only panel routes (optional `webServer`)
 //
-// Runtime constraints (ADR §3/§11): plain ESM + Node builtins only; no static
-// `@deepseek-ai/*` imports; no network calls; no additional listening port; no
-// child processes; no model calls. Shared content is untrusted data: it is
-// bounded, escaped and redacted before it reaches a model.
+// Constraints: plain ESM + Node builtins only; no static `@deepseek-ai/*`
+// imports; no network calls; no additional listening port; no child processes;
+// no model calls. Shared content is untrusted data: bounded, escaped, redacted.
 //
 // Activation is asynchronous (store/projection attachment is I/O): `apply()`
-// starts the bootstrap and returns; registrations that arrive late are normal
-// (the host re-reads tool/prompt contributions on the next step). A bootstrap
-// failure is logged and degrades to "plugin inactive", never a thrown plugin.
+// starts the bootstrap and returns. A bootstrap failure is logged and degrades
+// to "plugin inactive", never a thrown plugin.
 
 import fsSync from 'node:fs'
 import fsPromises from 'node:fs/promises'
 
 import { ConfluenceError, createLogger, isoNow, makeWriterId } from './lib/util.js'
 import { DEFAULTS, publicConfig, resolveConfig } from './lib/config.js'
-import { canonicalizeDir, createWorkspaceResolver } from './lib/workspace.js'
+import { canonicalizeDir, createOriginResolver } from './lib/workspace.js'
+import { GLOBAL_SCOPE_KEY } from './lib/store.js'
 import { createRedactor } from './lib/redact.js'
 import { JournalStore } from './lib/store.js'
 import { BoardService } from './lib/board.js'
@@ -34,7 +36,7 @@ import { PulseService } from './lib/pulse.js'
 import { RecallService } from './lib/recall.js'
 import { createTools, registerTools } from './lib/tools.js'
 import { registerHostUi } from './lib/hostui.js'
-import { ConfluenceFacade } from './lib/facade.js'
+import { ConfluenceFacade, MEMORY_SCOPE } from './lib/facade.js'
 
 /** Cordis plugin name used by Loader diagnostics. */
 export const name = 'confluence'
@@ -46,11 +48,10 @@ export const inject = ['tools']
 export { DEFAULTS }
 
 /** Plugin version reported by the panel ping route. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 /**
  * Host plugin entry.
- *
  * @param {object} ctx Cordis plugin context
  * @param {object} [rawConfig] Loader row config (defensive object; see lib/config.js)
  * @returns {undefined}
@@ -92,17 +93,14 @@ export function apply(ctx, rawConfig) {
 }
 
 /**
- * Test/embedding seam: same activation with injected service seams. Not used by
- * the Loader; kept small so hermetic tests can drive the facade without a host.
- *
+ * Test/embedding seam: same activation with injected service seams.
  * @param {object} ctx Cordis-like context (`get`, `on`, `effect`)
  * @param {object} [rawConfig]
- * @param {object} [deps] extra dependencies merged into the bootstrap
- * @returns {Promise<object>} services handle (has `dispose()`)
+ * @param {object} [deps]
+ * @returns {Promise<object>} services handle (has `dispose()`/`disposeAsync()`)
  */
 export async function applyWithDeps(ctx, rawConfig, deps = {}) {
-  const services = await bootstrap(ctx, rawConfig, deps)
-  return services
+  return await bootstrap(ctx, rawConfig, deps)
 }
 
 /**
@@ -125,30 +123,37 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
     ...injected.deps,
   }
 
-  const workspaceResolver =
-    injected.workspaceResolver ??
-    createWorkspaceResolver({
+  const originResolver =
+    injected.originResolver ??
+    createOriginResolver({
       workingDirectory: safeGet(ctx, 'workingDirectory') ?? null,
       fs: deps.fs,
       platform: process.platform,
     })
 
   const store = injected.store ?? new JournalStore({ config, logger, deps })
-  if (typeof store.init === 'function') await store.init()
 
   const redactor = injected.redactor ?? createRedactor(config, { logger })
   const board = injected.board ?? new BoardService({ store, config, redactor, logger, deps })
-
   const getService = (name) => safeGet(ctx, name)
+
   const ledgerDeps = {
     now: deps.now,
-    workspaceResolver,
+    originResolver,
+    workspaceResolver: originResolver, // legacy alias; provenance only
     canonicalizeDir: (raw) => canonicalizeDir(raw, { fs: deps.fs, platform: process.platform }),
     redactor,
     getService,
   }
   const ledger = injected.ledger ?? new SessionLedger({ store, config, logger, deps: ledgerDeps })
-  const presence = injected.presence ?? new Presence({ store, config, logger, deps: { now: deps.now } })
+  const presence =
+    injected.presence ??
+    new Presence({
+      store,
+      config,
+      logger,
+      deps: { now: deps.now, plugin: { name: 'dsh-confluence', version: VERSION } },
+    })
   const watermark = injected.watermark ?? new WatermarkTracker({ config, logger, deps: { now: deps.now } })
 
   const sessionQuery = getService('sessionQuery') ?? null
@@ -160,6 +165,7 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
       logger,
       deps: {
         sessionQuery,
+        getSessionQuery: () => safeGet(ctx, 'sessionQuery') ?? null,
         redactor,
         now: deps.now,
         canonicalizeDir: (raw) => canonicalizeDir(raw, { fs: deps.fs, platform: process.platform }),
@@ -189,7 +195,7 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
     new ConfluenceFacade({
       config,
       logger,
-      workspaceResolver,
+      originResolver,
       store,
       board,
       redactor,
@@ -198,14 +204,15 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
       recall,
       sessionQuery,
       sessionTitle,
-      onBoardChanged: (wsKey) => {
+      onBoardChanged: () => {
         try {
-          pulse.refresh(wsKey)
+          pulse.refresh()
         } catch {
           // Best-effort refresh.
         }
       },
     })
+
 
   const pulse =
     injected.pulse ??
@@ -213,17 +220,17 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
       config,
       logger,
       deps: {
-        getWorkspace: (sessionId) => facade.cachedWorkspace(sessionId),
-        getView: (wsKey) => {
+        getScope: () => MEMORY_SCOPE,
+        getView: () => {
           try {
-            return board.view(wsKey)
+            return board.view()
           } catch {
             return null
           }
         },
-        getPeers: (wsKey) => {
+        getPeers: () => {
           try {
-            return presence.live(wsKey)
+            return presence.live()
           } catch {
             return []
           }
@@ -236,7 +243,7 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
       },
     })
 
-  // ── host events: session tracking + workspace warming ───────────────────
+  // ── host events: session tracking + pulse refresh (no workspace warm-up) ─
   const onAgentCreated = (payload) => {
     try {
       const agent = payload && payload.agent
@@ -244,9 +251,9 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
       if (session) facade.trackSession(session)
       if (agent) {
         void facade
-          .ensureWorkspace(agent)
-          .then((ws) => {
-            pulse.refresh(ws.key)
+          .ensureReady(agent)
+          .then(() => {
+            pulse.refresh()
           })
           .catch(() => {})
       }
@@ -257,11 +264,7 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
   const onSessionEvent = (session, event) => {
     try {
       if (session) facade.trackSession(session)
-      if (event && event.type === 'turn/end' && session) {
-        const sessionId = session.id
-        const ws = sessionId === undefined ? null : facade.cachedWorkspace(sessionId)
-        if (ws !== null) pulse.refresh(ws.key)
-      }
+      if (event && event.type === 'turn/end') pulse.refresh()
     } catch {
       // Event handlers must never throw into the host.
     }
@@ -286,12 +289,7 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
     // Optional event.
   }
 
-  // ── component attachment ────────────────────────────────────────────────
-  try {
-    await watermark.attach(ctx)
-  } catch (error) {
-    logger.warn({ event: 'confluence.watermark.attach-failed', message: String(error) })
-  }
+  // ── component attachment (synchronous registrations only) ──────────────
   try {
     const offLedger = ledger.attach(ctx)
     if (typeof offLedger === 'function') disposers.push(offLedger)
@@ -308,12 +306,12 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
         const session = agent && agent.session
         const sessionId = session && session.id
         if (typeof sessionId !== 'string' || sessionId === '') continue
-        const ws = facade.cachedWorkspace(sessionId)
+        const origin = facade.originFor(sessionId)
         rows.push({
           id: sessionId,
           sessionId,
           title: typeof agent.title === 'string' ? agent.title : '',
-          wsKey: ws === null ? undefined : ws.key,
+          workspaceLabel: origin === null ? '' : String(origin.workspaceLabel ?? ''),
           status: typeof agent.status === 'string' ? agent.status : 'idle',
         })
       }
@@ -348,26 +346,47 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
   // ── read-only panel routes (optional web server) ────────────────────────
   let unregisterUi = null
   try {
-    unregisterUi = registerHostUi(ctx, { facade, workspaceResolver, config, logger })
+    unregisterUi = registerHostUi(ctx, { facade, config, logger })
     if (typeof unregisterUi === 'function') disposers.push(unregisterUi)
   } catch (error) {
     logger.warn({ event: 'confluence.ui.register-failed', message: String(error) })
   }
 
-  // ── warm currently live agents, then keep mirrors fresh ─────────────────
+  // ── async activation: store, universal board, watermark projection ──────
+  // Tools/pulse/routes are registered synchronously above so the first model
+  // request after activation already sees the plugin (M0 cold-start race). The
+  // I/O below only fills the store/board behind those registrations.
+  try {
+    if (typeof store.init === 'function') await store.init()
+  } catch (error) {
+    logger.warn({ event: 'confluence.store.init-failed', message: String(error) })
+  }
+  try {
+    await facade.ensureBoard()
+  } catch (error) {
+    logger.warn({ event: 'confluence.board.attach-failed', message: String(error) })
+  }
+  try {
+    await watermark.attach(ctx)
+  } catch (error) {
+    logger.warn({ event: 'confluence.watermark.attach-failed', message: String(error) })
+  }
+  // ── warm live agents, then keep the global board/pulse fresh ────────────
   for (const agent of listAgents(ctx)) onAgentCreated({ agent })
-  for (const wsKey of facade.workspaceKeys()) pulse.refresh(wsKey)
+  try {
+    pulse.refresh()
+  } catch {
+    // Best-effort warm-up.
+  }
 
   const pollMs = Math.max(4000, Math.min(10000, Math.trunc(Number(config.store && config.store.pollMs) || 4000)))
   const timer = setInterval(() => {
     void (async () => {
-      for (const wsKey of facade.workspaceKeys()) {
-        try {
-          await board.refresh(wsKey)
-          pulse.refresh(wsKey)
-        } catch {
-          // Cross-window refresh is best-effort; the prompt stays byte-stable.
-        }
+      try {
+        await board.refresh()
+        pulse.refresh()
+      } catch {
+        // Cross-window refresh is best-effort; the prompt stays byte-stable.
       }
       try {
         if (presence && typeof presence.refreshPresence === 'function') await presence.refreshPresence()
@@ -422,13 +441,11 @@ async function bootstrap(ctx, rawConfig, injected = {}) {
     publicConfig: publicConfig(config),
     warnings,
     logger,
-    services: { store, board, ledger, presence, watermark, pulse, recall, facade, workspaceResolver },
+    scope: MEMORY_SCOPE,
+    globalScopeKey: GLOBAL_SCOPE_KEY,
+    services: { store, board, ledger, presence, watermark, pulse, recall, facade, originResolver },
     dispose: disposeOnce,
-    /**
-     * Awaitable teardown for tests and embedders: same as `dispose()` plus the
-     * asynchronous store/projection close. Idempotent; never throws.
-     * @returns {Promise<void>}
-     */
+    /** Awaitable teardown for tests/embedders; idempotent, never throws. */
     async disposeAsync() {
       disposeOnce()
       try {

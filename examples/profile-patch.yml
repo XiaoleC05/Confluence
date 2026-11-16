@@ -1,22 +1,33 @@
-# Confluence / 汇流 — example user overrides
+# Confluence / 汇流 — example user overrides (v0.2.0, universal memory)
 #
 # These are EXAMPLES for a user's own profile layer
 # ($DSH_HOME/profiles/<profile>/cordis.patch.yml). Nothing here is loaded by the
 # repository, the bundle, or the tests.
 #
+# SCOPE (v0.2.0, ADR-0007): memory is UNIVERSAL — one shared space for every
+# session in this DSH profile, whatever directory it runs in. A workspace (a
+# folder name) appears only as a provenance label on a note; it is never a
+# partition or a filter. There is no scope switch and no per-workspace opt-out:
+# the removed `privacy.disabledWorkspaces` key is gone. To keep one conversation
+# out of shared memory, list its session id in `privacy.privateSessions`.
+#
 # Row matching: later layers win per row, and a matching override REPLACES the
 # row's complete `config` object instead of deep-merging it. That is why each
-# example below repeats the full v1 configuration — copy one block and change
-# only the fields you care about. The bundle's own defaults are in
+# example below repeats the full configuration — copy one block and change only
+# the fields you care about. The bundle's own defaults are in
 # ../cordis.patch.yml; the field-by-field contract is docs/design/config.md.
 #
-# At design stage the scaffold has no behaviour, so overrides only change the
-# single activation warning. The examples describe the intended v1 semantics.
+# Upgrading from v0.1.0: `privacy.disabledWorkspaces` was removed and
+# `ledger.maxSessionsPerWorkspace` was renamed to `ledger.maxSessions`. See
+# docs/upgrade-v0.2.md. A config edit reloads the plugin row; the linked bundle
+# needs a DSH restart to load the new Host modules.
 
 # ---------------------------------------------------------------------------
-# Example 1 — privacy first: fewer headlines, no file hints, opt-outs.
-# Use when a workspace may contain sensitive material and you want the minimum
-# ambient surface.
+# Example 1 — privacy first: fewer headlines, no file hints, private sessions.
+# The profile is the sharing boundary, so "private" is per session, not per
+# folder: a private session gets no pulse, no ledger row, no presence and no
+# Confluence tools, while its own DSH session log stays available to other
+# DSH features as before.
 # ---------------------------------------------------------------------------
 - id: confluence
   name: dsh-confluence
@@ -37,7 +48,7 @@
     ledger:
       enabled: true
       maxFilesPerSession: 0
-      maxSessionsPerWorkspace: 50
+      maxSessions: 50
       fileHintsInPulse: false
     recall:
       enabled: false
@@ -53,7 +64,6 @@
         - '**/*.pem'
         - '**/secrets/**'
       privateSessions: []
-      disabledWorkspaces: []
     ui:
       enabled: true
       pollMs: 5000
@@ -65,9 +75,8 @@
 
 # ---------------------------------------------------------------------------
 # Example 2 — low noise: turn the passive surfaces off, keep explicit tools.
-# The agent can still read/write the board when asked; nothing is injected and
-# no presence is advertised. Useful while the team is still calibrating trust
-# in the pulse.
+# The agent can still read/write shared memory when asked; nothing is injected
+# and no presence is advertised. Useful while calibrating trust in the pulse.
 # ---------------------------------------------------------------------------
 - id: confluence
   name: dsh-confluence
@@ -88,7 +97,7 @@
     ledger:
       enabled: false
       maxFilesPerSession: 8
-      maxSessionsPerWorkspace: 200
+      maxSessions: 200
       fileHintsInPulse: false
     recall:
       enabled: true
@@ -103,7 +112,6 @@
         - '**/.env*'
         - '**/*.pem'
       privateSessions: []
-      disabledWorkspaces: []
     ui:
       enabled: false
       pollMs: 5000
@@ -115,9 +123,9 @@
 
 # ---------------------------------------------------------------------------
 # Example 3 — debugging a store/pulse problem on one machine.
-# Faster polling, a dedicated debug log outside the workspace, and a custom
-# store directory under DSH_HOME. Keep logFile out of version control and never
-# point it at a directory that contains session content.
+# Faster polling, a dedicated debug log outside the working directory, and a
+# custom store directory under DSH_HOME. Keep logFile out of version control and
+# never point it at a directory that contains session content.
 # ---------------------------------------------------------------------------
 - id: confluence
   name: dsh-confluence
@@ -138,7 +146,7 @@
     ledger:
       enabled: true
       maxFilesPerSession: 8
-      maxSessionsPerWorkspace: 200
+      maxSessions: 200
       fileHintsInPulse: false
     recall:
       enabled: true
@@ -153,7 +161,6 @@
         - '**/.env*'
         - '**/*.pem'
       privateSessions: []
-      disabledWorkspaces: []
     ui:
       enabled: true
       pollMs: 5000
@@ -162,3 +169,55 @@
       dir: '.confluence/export'
     debug:
       logFile: 'C:\Users\<you>\.dsh\logs\confluence-debug.log'
+
+# ---------------------------------------------------------------------------
+# Example 4 — keep one conversation out of shared memory.
+# Because memory is universal, opting out is per session, not per folder: put
+# the DSH session id in `privacy.privateSessions`. The plugin then emits no
+# pulse for it, writes no ledger row or presence heartbeat, and hides the six
+# Confluence tools from that session. Existing notes it already wrote stay
+# readable (records are append-only); delete the store only if you mean it.
+# ---------------------------------------------------------------------------
+- id: confluence
+  name: dsh-confluence
+  config:
+    enabled: true
+    store:
+      dir: ''
+      retentionDays: 90
+      maxEntriesPerWorkspace: 2000
+      maxBodyBytes: 8192
+      pollMs: 4000
+      watch: true
+    pulse:
+      enabled: true
+      maxHeadlines: 3
+      maxPeers: 2
+      maxChars: 1400
+    ledger:
+      enabled: true
+      maxFilesPerSession: 8
+      maxSessions: 200
+      fileHintsInPulse: false
+    recall:
+      enabled: true
+      maxSessions: 3
+      maxHits: 5
+      timeoutMs: 5000
+    privacy:
+      redact: true
+      redactTitles: true
+      redactPatterns: []
+      denyPathPatterns:
+        - '**/.env*'
+        - '**/*.pem'
+      privateSessions:
+        - 'session-<id-of-the-conversation>'
+    ui:
+      enabled: true
+      pollMs: 5000
+    export:
+      enabled: false
+      dir: '.confluence/export'
+    debug:
+      logFile: ''

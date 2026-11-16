@@ -1,0 +1,28 @@
+{
+  "//": "Deterministic E2E scenario for session E (workspace B, a different directory from the writer): exactly ONE tool call — confluence_recall — then a text answer. The query is a phrase spoken in session A (workspace-a), so a literal cross-profile recall must return a session:<id>:<seq> hit from A. The 'literal match only' matcher is only satisfiable by a successful recall render; a failure falls through to a final answer instead of looping.",
+  "default": { "text": "MOCK_FALLBACK: unexpected request shape; ending the turn." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Mock E2E recall session"
+    },
+    {
+      "when": { "messagesIncludes": "literal match only" },
+      "text": "Cross-directory recall confirmed."
+    },
+    {
+      "when": { "hasToolResult": true },
+      "text": "MOCK_FALLBACK: recall returned no session excerpt; ending the turn."
+    },
+    {
+      "when": { "hasToolResult": false },
+      "toolUse": {
+        "name": "confluence_recall",
+        "input": { "query": "cross-directory E2E harness gotcha" }
+      }
+    },
+    {
+      "text": "MOCK_FALLBACK: unexpected request shape; ending the turn."
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 {
-  "//": "Deterministic E2E scenario: title utilities get a short title; the task request gets one text answer. Used by scripts/e2e-dsh.ps1 baseline scenario and by the second (reader) session of the pulse scenario.",
+  "//": "Deterministic E2E scenario for the passive pulse session (workspace B, a different directory from the writer). Title utility gets a short title; the task request gets one text answer and makes no tool calls, so the only way the writer's note can reach this session is the passive pulse.",
   "default": { "text": "Mock default answer (no matching scenario rule)." },
   "responses": [
     {
       "when": { "systemIncludes": "concise title" },
-      "text": "Mock E2E session title"
+      "text": "Mock E2E pulse session"
     },
     {
       "when": { "hasToolResult": true },

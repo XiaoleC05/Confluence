@@ -14,10 +14,21 @@ producer side is implemented — see §6.5); context:
 One-paragraph summary: Confluence is vendored into `solo-bench/integrations/dsh-plugin-confluence/`
 with `git subtree`, so the workbench repository carries a self-contained copy of the plugin and its
 docs. `solo-bench` never imports DSH or the plugin; it gains (in a separately approved later phase) a
-small **read-only Go parser** for the plugin's opt-in export — `<workspace>/.confluence/export/manifest.json`
+small **read-only Go parser** for the plugin's opt-in export — `manifest.json`
 plus `memories.v1.jsonl` under the `confluence.memories/v1` format. The export is deterministic,
-redacted, workspace-relative and file-only, which is exactly what a single-user, no-server,
+redacted, relative-path and file-only, which is exactly what a single-user, no-server,
 no-model, no-subprocess workbench can consume offline.
+
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md), delta
+> §8).** The `confluence.memories/v1` field contract is unchanged (additive only), so the Go consumer
+> keeps working. The manifest gains `"scope":"global"` and reports
+> `workspace:{wsKey:"ws_0000000000000000", name:"All sessions"}`; **every record uses the global
+> `wsKey`**, and an optional additive `origin:{workspaceKey?, workspaceLabel?}` carries the workspace
+> the note came from (unknown fields are ignored by v1 consumers). The export is now profile-local by
+> default: `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`, with `--out` to override; the
+> `--workspace` CLI flag is gone and the producer function is `exportMemories()`. Older v0.1.0 exports
+> remain valid v1 files with a per-workspace `wsKey`. Binding delta:
+> [`../plan/scope-refactor-delta.md`](../plan/scope-refactor-delta.md) §8.
 
 ---
 
@@ -185,11 +196,11 @@ Notes and caveats to record in that phase's verification doc:
 
 The contract itself is owned by [`store-format.md`](store-format.md) §14 (and ADR 0002 item 8); this
 section is the **consumer view** and must not diverge from it. Output location (opt-in, explicit user
-action, M4): `<workspace>/.confluence/export/`, resolved from the canonical workspace path +
-`config.export.dir` (a rooted or `..` value is refused). The plugin never reads these files back.
+action): `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/` by default; `--out <dir>` may override
+it. The plugin never reads these files back.
 
 ```text
-<workspace>/.confluence/export/
+$DSH_HOME/storages/confluence-exports/<UTC-stamp>/   # default root; --out may override
   memories.v1.jsonl     # one entry record per line; UTF-8, no BOM, "\n", ≤64 KiB per line
   manifest.json         # version/pointer envelope; written LAST, atomically
 ```
@@ -203,9 +214,10 @@ Q5); the store's own `MANIFEST.v1.json` (store-format §15) is a different, prof
 {
   "schema": "confluence.memories/v1",
   "formatVersion": 1,
-  "producer": { "name": "dsh-confluence", "version": "0.1.0", "dsh": "0.2.2-rc.1" },
-  "generatedAt": "2026-11-13T03:10:00.000Z",
-  "workspace": { "wsKey": "ws_3f9a1c7e2b4d8061", "name": "solo-bench" },
+  "scope": "global",
+  "producer": { "name": "dsh-confluence", "version": "0.2.0", "dsh": "0.2.2-rc.1" },
+  "generatedAt": "2026-11-16T03:10:00.000Z",
+  "workspace": { "wsKey": "ws_0000000000000000", "name": "All sessions" },
   "recordCount": 38,
   "firstSeq": "01JBQ8Z4K2V7R3N5T6X1Y8M0PQ",
   "lastSeq": "01JBQ8Z4K6D3E1G4J8F5X9Q7S2",
@@ -218,8 +230,9 @@ Q5); the store's own `MANIFEST.v1.json` (store-format §15) is a different, prof
 | Field | Consumer rule |
 |---|---|
 | `schema` / `formatVersion` | Validate **first**: accept only `schema == "confluence.memories/v1"` and `formatVersion == 1`; reject other versions with a clear upgrade message |
+| `scope` | v0.2.0 additive field: `"global"`. **Ignore it** unless you specifically want to distinguish a universal export from a v0.1.0 per-workspace one (then treat a missing `scope` as the legacy per-workspace form) |
 | `producer` | Diagnostics only (`name`, `version`, `dsh`); never feature-gate on version strings |
-| `workspace.wsKey` / `name` | Workspace key + display label. **No absolute/home paths anywhere in the export** (ADR §11); the consumer already knows the workspace it asked about |
+| `workspace.wsKey` / `name` | v0.2.0 reports the reserved global key `ws_0000000000000000` and name `All sessions`. **No absolute/home paths anywhere in the export** (ADR §11); the consumer knows which export directory it opened, so the label need not identify a folder |
 | `generatedAt` | RFC 3339 UTC; the only non-deterministic manifest field (see §6.3); surface it as "export age" |
 | `recordCount` / `firstSeq` / `lastSeq` | Cover **live (non-stub) records only**; tombstone stubs are excluded from these counts (Lead ruling) and validated separately. Consumer rule: count non-stub lines after parsing and require equality with `recordCount` |
 | `files[0]` (`name`/`bytes`/`sha256`) | Exactly `memories.v1.jsonl`; `bytes`/`sha256` cover the **complete file including tombstone stubs** — verify before parsing |
@@ -234,7 +247,7 @@ additive and ignored by readers; repeated exports of an unchanged store are byte
 manifest `generatedAt`/`files[].sha256`.
 
 ```json
-{"v":1,"schema":"confluence.memories/v1","type":"entry","id":"cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD","wsKey":"ws_3f9a1c7e2b4d8061","seq":"01JBQ8Z4K2V7R3N5T6X1Y8M0PQ","ts":"2026-11-13T02:41:07.512Z","kind":"gotcha","title":"Windows rename retries wrap in EPERM","body":"spawnSync rename throws EPERM when a scanner holds the handle.","tags":["windows","fs"],"files":["src/fs/rename.ts"],"author":{"sessionId":"session-23da…","title":"Auth work","origin":"agent"},"replyTo":null,"resolves":null,"supersedes":null,"deleted":false,"deletedAt":null}
+{"v":1,"schema":"confluence.memories/v1","type":"entry","id":"cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD","wsKey":"ws_0000000000000000","seq":"01JBQ8Z4K2V7R3N5T6X1Y8M0PQ","ts":"2026-11-16T02:41:07.512Z","kind":"gotcha","title":"Windows rename retries wrap in EPERM","body":"spawnSync rename throws EPERM when a scanner holds the handle.","tags":["windows","fs"],"files":["src/fs/rename.ts"],"author":{"sessionId":"session-23da…","title":"Auth work","origin":"agent"},"origin":{"workspaceKey":"ws_3f9a1c7e2b4d8061","workspaceLabel":"solo-bench"},"replyTo":null,"resolves":null,"supersedes":null,"deleted":false,"deletedAt":null}
 ```
 
 | Field | Type | Req | Rule |
@@ -243,7 +256,8 @@ manifest `generatedAt`/`files[].sha256`.
 | `schema` | string | yes | `confluence.memories/v1`; the manifest is the version authority |
 | `type` | string | yes | `"entry"` in v1; unknown types skipped by consumers |
 | `id` | string | yes | Board id unchanged: `cnf_` + 26-char ULID (opaque; monitor for duplicates per file) |
-| `wsKey` | string | yes | Must equal `manifest.workspace.wsKey` |
+| `wsKey` | string | yes | Must equal `manifest.workspace.wsKey` (the global constant in v0.2.0; a per-workspace key in v0.1.0 exports) |
+| `origin` | object | no | v0.2.0 additive provenance `{workspaceKey?, workspaceLabel?}` (basename label, never a path). Ignore unknown fields |
 | `seq` | string | yes | ULID string; export order and sort key |
 | `ts` | string | yes | RFC 3339 UTC |
 | `kind` | string | yes | `finding`, `decision`, `gotcha`, `question`, `handoff`, `warning` |
@@ -308,14 +322,14 @@ Go consumer remain future phases ([ADR 0006](../adr/0006-solo-bench-integration.
 
 | Piece | Path | Status / evidence |
 |---|---|---|
-| Export library | `lib/export.js` (`exportWorkspace`, `validateExportDir`, `stripAbsolutePaths`, `workspaceLabelFor`) | Implemented. Reads merged journal records through `JournalStore`, folds them with `foldRecords`, writes the pair outside the store, never reads it back. |
-| CLI | `scripts/export-memories.mjs` (`run()` exported for in-process tests) | Implemented. `node scripts/export-memories.mjs --dsh-home <dir> --workspace <path> [--out <dir>] [--json] [--dry-run]`. Exit 0 success; 1 runtime failure (`export-memories: <CODE>: <message>`, codes `NOT_FOUND`, `STORE_UNAVAILABLE`, `BAD_ARGUMENT`, `EXPORT_FAILED`); 2 usage error. `--out` is workspace-relative only (rooted/`..` rejected); default `<workspace>/.confluence/export/`. |
-| Tests | `test/export.test.js` | **Executed:** `node --test --test-force-exit "test/export.test.js"` → 10/10 pass (EXP-01..10): mapping/order, live-only counts, tombstone stubs, manifest hash/bytes, redaction/absolute-path stripping, determinism, store read-only + dry run, fail-closed failures, CLI run() paths, helper contracts. |
-| Integrity rule (V7) | `lib/export.js` manifest builder | Implemented literally: `files[0].bytes`/`sha256` cover the complete JSONL **including tombstone stubs**; `recordCount`/`firstSeq`/`lastSeq` count **live** records only. |
+| Export library | `lib/export.js` (`exportMemories`, `validateExportDir`, `stripAbsolutePaths`, `workspaceLabelFor`, `EXPORT_SCOPE`) | Implemented. Reads merged journal records through `JournalStore`, folds them with `foldRecords`, writes the pair outside the store, never reads it back. v0.2.0 rebuilds it around the global scope. |
+| CLI | `scripts/export-memories.mjs` (`run()` exported for in-process tests) | Implemented. `node scripts/export-memories.mjs --dsh-home <dir> [--out <dir>] [--json] [--dry-run]` — **no `--workspace` flag**. Default output `<dsh-home>/storages/confluence-exports/<UTC-stamp>/`. Exit 0 success; 1 runtime failure (`export-memories: <CODE>: <message>`, codes `BAD_ARGUMENT`, `EXPORT_FAILED`, `STORE_UNAVAILABLE`); 2 usage error. |
+| Tests | `test/export.test.js` | Re-run against the v0.2.0 global exporter (mapping/order, global `wsKey`, additive `origin`, manifest `scope`, tombstone stubs, redaction/absolute-path stripping, determinism, store read-only + dry run, CLI run() paths). |
+| Integrity rule (V7) | `lib/export.js` manifest builder | Unchanged: `files[0].bytes`/`sha256` cover the complete JSONL **including tombstone stubs**; `recordCount`/`firstSeq`/`lastSeq` count **live** records only. |
 | Caps | `lib/export.js` | Per-line 64 KiB enforced; total file capped at 8 MiB by deterministic tail truncation with `limits.truncated: true`; `maxEntriesPerWorkspace` recorded in `limits`. |
-| E2E proof | `.tmp/e2e/run-20261113-183207/dsh-home` scratch store | **Executed:** the CLI exported the real E2E scratch store (workspace `ws_35ca2d7650a1831a`) to `<workspace>/.confluence/export/` — `recordCount: 1`, seq range `01M7A7DYERF1P01M74E9TT2CGN..01M7A7DYERF1P01M74E9TT2CGN`, `files[0]` 564 bytes, sha256 `39d0ffe9…4247`; `--dry-run` reported the same hashes and wrote nothing. |
-| UI/tool surface | — | **Not implemented in v0.1.0:** no panel "Export now" button and no model-facing export tool; the CLI *is* the explicit user action. Panel export stays future (v0.1.1+). |
-| Go consumer, subtree merge, fixtures | — | **Not started** (separate approved phase). `test/fixtures/export/` conformance fixtures land together with the consumer, so the Go side copies frozen fixtures instead of reading this repository at test runtime. |
+| E2E proof | v0.2.0 run artifacts | **To re-record** after the refactor: the CLI exported the global store (scope `global`, global `wsKey`) with a deterministic hash and `--dry-run` writing nothing. The v0.1.0 evidence (per-workspace export of `ws_35ca2d7650a1831a`, 564-byte JSONL, sha256 `39d0ffe9…4247`) is historical. |
+| UI/tool surface | — | **Not implemented:** no panel "Export now" button and no model-facing export tool; the CLI *is* the explicit user action. |
+| Go consumer, subtree merge, fixtures | — | **Not started** (separate approved phase). `test/fixtures/export/` conformance fixtures land together with the consumer and must be regenerated from the v0.2.0 CLI (`real/` fixtures are global exports). |
 
 Implementation notes / deviations from the design sketch (all reviewed, none contract-breaking):
 
@@ -384,7 +398,9 @@ type Author struct{ SessionID, Title, Origin string }
 
 ### 7.2 Parsing rules (strict where the contract is authoritative, tolerant where it says so)
 
-1. Locate `manifest.json` under the workspace's `.confluence/export/` (or an explicit `--export-dir`
+1. Locate the export directory: the default `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`
+   (profile-local) or an explicit `--export-dir` the user passes (v0.2.0 no longer writes into a
+   workspace by default).
    for tests); **read-only**, no directory scanning beyond that one known path.
 2. Read the manifest with a size cap (e.g. 64 KiB) and `json.Decoder`; **ignore unknown fields**;
    validate `schema == "confluence.memories/v1"`, `formatVersion == 1`, non-empty `workspace.wsKey`,
@@ -424,14 +440,15 @@ solo-bench confluence show <entry-id> --project <id> [--json]
 solo-bench confluence status --project <id> [--json]
 ```
 
-- `--project <id>` resolves to the stored project path; the command reads
-  `<project.path>/.confluence/export/` only. `--export-dir <dir>` is the test/override path.
+- `--project <id>` resolves to the stored project path; the command reads one explicit export
+  directory: `--export-dir <dir>`, else the profile-local default
+  `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/` the user names. It never scans the disk.
 - The command is **read-only** and needs no DB schema change, no migration, no invocation row, and no
   service registry entry. If a future phase adds caching, that is a separate schema-versioned decision.
 - Help text states: "Reads Confluence's exported memory; export it from DSH first. Works offline."
-- `status` prints `workspace.wsKey`/`name`, `recordCount` and the live `firstSeq`/`lastSeq` range,
-  `files[0]` bytes/`sha256`, `formatVersion`, `limits.truncated`, producer version and `generatedAt`
-  — enough to detect a stale/absent/truncated export.
+- `status` prints `workspace.wsKey`/`name` (global in v0.2.0), `scope` when present, `recordCount` and
+  the live `firstSeq`/`lastSeq` range, `files[0]` bytes/`sha256`, `formatVersion`, `limits.truncated`,
+  producer version and `generatedAt` — enough to detect a stale/absent/truncated export.
 
 ### 7.4 Why not a `solo-bench service` row or subprocess
 
@@ -451,8 +468,10 @@ behavior and no external program; adding a fifth fixed-row service would break t
 - No server, no model call, no `os/exec`, no extra listening port, no network on either side.
 - No DB schema change / migration / new table / new service row in `solo-bench` phase 0; the consumer
   is gated behind a separate, explicitly approved later phase.
-- No automatic discovery: the consumer never scans the disk for workspaces or `.confluence` dirs.
-- No writing to the export directory; no "sync", no merge, no dedupe across workspaces (one workspace
+- No automatic discovery: the consumer never scans the disk for `.confluence` dirs or profiles; the
+  user names the export directory.
+- No writing to the export directory; no "sync", no merge, no dedupe across exports (one export
+  directory per invocation).
   per invocation, by explicit project/export path).
 - No new license file at the `solo-bench` root; the vendored subtree keeps its upstream `LICENSE`.
 - No subtree push automation or CI; updates are a manual, reviewed command.

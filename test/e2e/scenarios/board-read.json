@@ -1,0 +1,24 @@
+{
+  "//": "Deterministic E2E scenario for reader session C (workspace B, a different directory from the writer): exactly ONE tool call — confluence_board — then a text answer. One tool per session keeps the mock scenario independent of the DSH message-count shape (the runtime-context snapshot count changed in v0.2.0) and makes a failure fall through to a final answer instead of looping.",
+  "default": { "text": "MOCK_FALLBACK: unexpected request shape; ending the turn." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Mock E2E board reader session"
+    },
+    {
+      "when": { "hasToolResult": true },
+      "text": "Cross-directory board confirmed."
+    },
+    {
+      "when": { "hasToolResult": false },
+      "toolUse": {
+        "name": "confluence_board",
+        "input": { "limit": 6 }
+      }
+    },
+    {
+      "text": "MOCK_FALLBACK: unexpected request shape; ending the turn."
+    }
+  ]
+}

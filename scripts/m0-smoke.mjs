@@ -471,23 +471,34 @@ async function checks() {
 
   // -------------------------------------------------------------- M0-S2 substrate
   await check('SMOKE-SESSION-DECODE', 'M0-S2', 'multi-frame zstd session log decodes header and all committed events', async () => {
-    const { decodeSessionLogFile } = await import(pathToFileURL(SESSION_LOG_LIB).href)
+    const sessionLog = await import(pathToFileURL(SESSION_LOG_LIB).href)
+    const { decodeSessionLogFile } = sessionLog
     const dir = join(tempRoot, 'decode')
     mkdirSync(dir, { recursive: true })
     const file = join(dir, 'session.v4.jsonl.zstd')
     const header = { type: 'session', version: 4, id: 'session-smoke-decode', createdAt: 1794000000000, cwd: 'X:\\smoke\\workspace', isSeeded: false, delegationDepth: 0 }
     const events = [
       { type: 'user/message', seq: 0, time: 1794000000001, data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' }, role: 'user', id: 'm1' } },
-      { type: 'user/message', seq: 1, time: 1794000000002, data: { content: [{ type: 'text', text: 'Current runtime context. ...' }], source: { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'confluence:pulse', text: '<confluence-workspace>fixture</confluence-workspace>' }] }, role: 'user', id: 'm2' } },
-      { type: 'assistant/message', seq: 2, time: 1794000000003, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }], source: { kind: 'model' } } } },
+      { type: 'user/message', seq: 1, time: 1794000000002, data: { content: [{ type: 'text', text: 'Current runtime context. ...' }], source: { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'confluence:pulse', text: '<confluence-memory scope="global" peers="0" unread="0" seq="0" welcome="1">\nShared memory for all sessions on this machine.\n</confluence-memory>' }] }, role: 'user', id: 'm2' } },
+      // v0.1.0 sessions (and forks that inherit their snapshots) still carry the legacy tag.
+      { type: 'user/message', seq: 2, time: 1794000000003, data: { content: [{ type: 'text', text: 'Current runtime context. ...' }], source: { kind: 'runtime-context', form: 'snapshot', sections: [{ name: 'confluence:pulse', text: '<confluence-workspace name="alpha" peers="0" unread="0" seq="0">\nlegacy snapshot\n</confluence-workspace>' }] }, role: 'user', id: 'm3' } },
+      { type: 'assistant/message', seq: 3, time: 1794000000004, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }], source: { kind: 'model' } } } },
     ]
     const frames = [header, ...events].map((event) => zstdCompressSync(Buffer.from(JSON.stringify(event) + '\n', 'utf8')))
     writeFileSync(file, Buffer.concat(frames))
     const decoded = decodeSessionLogFile(file)
     assert(decoded.header.id === 'session-smoke-decode', 'header id mismatch')
-    assert(decoded.events.length === 3, `expected 3 events, got ${decoded.events.length}`)
+    assert(decoded.events.length === 4, `expected 4 events, got ${decoded.events.length}`)
     assert(decoded.events[1].data.source.sections[0].name === 'confluence:pulse', 'pulse section not preserved')
-    return { status: 'PASS', detail: `${frames.length} frames, ${decoded.eventCount} records, pulse section readable` }
+    assert(typeof sessionLog.pulseTag === 'function', 'session-log.mjs lacks pulseTag (dual-tag detection)')
+    const pulses = sessionLog.pulseSnapshots(decoded.events)
+    assert(pulses.length === 2, `expected 2 pulse snapshots, got ${pulses.length}`)
+    assert(pulses[0].tag === sessionLog.MEMORY_PULSE_TAG, `new snapshot tag ${pulses[0].tag}`)
+    assert(pulses[0].header?.attributes?.scope === 'global', 'new snapshot lost scope="global"')
+    assert(pulses[1].tag === sessionLog.LEGACY_PULSE_TAG, `legacy snapshot tag ${pulses[1].tag}`)
+    assert(sessionLog.isPulseText(pulses[1].pulseText) === true, 'legacy pulse not recognized')
+    assert(sessionLog.pulseTag('not a pulse') === null, 'pulseTag accepted non-pulse text')
+    return { status: 'PASS', detail: `${frames.length} frames, ${decoded.eventCount} records, both pulse tags recognized` }
   })
 
   // -------------------------------------------------------------- mock LLM self-test
@@ -617,24 +628,29 @@ async function checks() {
   }
 
   // -------------------------------------------------------------- M1 prep: pulse caps
-  await check('SMOKE-PULSE-FIXTURES', 'M1-prep', 'pulse cap fixtures match the binding 1 400-char / 320-token limits', () => {
+  await check('SMOKE-PULSE-FIXTURES', 'M1-prep', 'pulse cap fixtures match the global template and the binding 1 400-char / 320-token limits', () => {
     const fixture = JSON.parse(readFileSync(join(FIXTURES, 'pulse', 'cap-cases.json'), 'utf8'))
     assert(fixture.limits.maxChars === 1400, `maxChars fixture ${fixture.limits.maxChars} != 1400`)
     assert(fixture.limits.maxTokens === 320, `maxTokens fixture ${fixture.limits.maxTokens} != 320`)
+    assert(fixture.template && fixture.template.tag === 'confluence-memory', `fixture template tag ${fixture.template?.tag} != confluence-memory`)
+    assert(fixture.template.scope === 'global', `fixture template scope ${fixture.template?.scope} != global`)
+    assert(fixture.template.hasWorkspaceLabel === false, 'fixture still documents a workspace label')
     const ids = new Set()
     for (const testCase of fixture.cases) {
       assert(!ids.has(testCase.id), `duplicate pulse case ${testCase.id}`)
       ids.add(testCase.id)
       assert(testCase.input && typeof testCase.input === 'object', `pulse case ${testCase.id} has no input`)
-      for (const field of ['workspaceLabel', 'newEntries', 'openQuestions', 'openHandoffs', 'peers', 'welcome', 'cursor', 'maxChars']) {
+      // v0.2.0: buildPulseText takes no workspaceLabel — universal memory is the only scope.
+      assert(!Object.prototype.hasOwnProperty.call(testCase.input, 'workspaceLabel'), `pulse case ${testCase.id} still passes workspaceLabel`)
+      for (const field of ['newEntries', 'openQuestions', 'openHandoffs', 'peers', 'welcome', 'cursor', 'maxChars']) {
         assert(Object.prototype.hasOwnProperty.call(testCase.input, field), `pulse case ${testCase.id} missing ${field}`)
       }
     }
-    return { status: 'PASS', detail: `${fixture.cases.length} cases, caps 1400 chars / 320 tokens` }
+    return { status: 'PASS', detail: `${fixture.cases.length} cases, global template, caps 1400 chars / 320 tokens` }
   })
 
   if (hasLib('pulse.js')) {
-    await check('SMOKE-PULSE', 'M1-prep', 'lib/pulse.js stays empty-or-untrusted-framed within both caps', async () => {
+    await check('SMOKE-PULSE', 'M1-prep', 'lib/pulse.js renders the global template, stays empty-or-untrusted-framed within both caps', async () => {
       const module = await importLib('pulse.js')
       if (!module || typeof module.buildPulseText !== 'function') {
         return { status: 'SKIP', detail: 'lib/pulse.js present but no buildPulseText export (align with implementation-interfaces §9)' }
@@ -653,11 +669,19 @@ async function checks() {
         }
         assert(text.length <= fixture.limits.maxChars, `case ${testCase.id}: ${text.length} chars > ${fixture.limits.maxChars}`)
         assert(estimateTokens(text) <= fixture.limits.maxTokens, `case ${testCase.id}: ${estimateTokens(text)} tokens > ${fixture.limits.maxTokens}`)
+        // Universal-memory template: exactly one <confluence-memory scope="global" …> block, no workspace label.
+        const openingTag = text.split('\n')[0];
+        assert(/^<confluence-memory\b[^>]*>$/.test(openingTag), `case ${testCase.id}: first line is not a confluence-memory opening tag: ${openingTag.slice(0, 120)}`)
+        assert(/\bscope="global"/.test(openingTag), `case ${testCase.id}: opening tag lacks scope="global"`)
+        assert(/\bpeers="\d+"/.test(openingTag) && /\bunread="\d+"/.test(openingTag), `case ${testCase.id}: opening tag lacks peers/unread counts`)
+        assert(/\bseq="[0-9A-Z]{1,26}"/.test(openingTag), `case ${testCase.id}: opening tag lacks the seq cursor`)
+        assert(!/\bname="/.test(openingTag), `case ${testCase.id}: global header still carries a workspace label: ${openingTag.slice(0, 120)}`)
+        assert(!text.includes(fixture.template.legacyTag), `case ${testCase.id}: legacy ${fixture.template.legacyTag} tag survived`)
         for (const needle of testCase.expect.mustContain ?? []) assert(text.includes(needle), `case ${testCase.id}: missing "${needle}"`)
         for (const forbidden of testCase.expect.forbidRaw ?? []) {
           // The template's own closing tag is expected exactly once; hostile copies must not
           // add another. Other forbidden values must not appear at all.
-          if (forbidden === '</confluence-workspace>') {
+          if (forbidden === '</confluence-memory>') {
             const count = text.split(forbidden).length - 1
             assert(count === 1, `case ${testCase.id}: expected exactly one template closing tag, saw ${count}`)
           } else {
@@ -665,7 +689,7 @@ async function checks() {
           }
         }
       }
-      return { status: 'PASS', detail: `${fixture.cases.length} cases within caps via lib/pulse.js` }
+      return { status: 'PASS', detail: `${fixture.cases.length} cases within caps via lib/pulse.js (global template)` }
     })
   } else {
     skip('SMOKE-PULSE', 'M1-prep', 'lib/pulse.js cap behavior', 'lib/pulse.js absent (WP4 dsh-researcher not landed yet)')

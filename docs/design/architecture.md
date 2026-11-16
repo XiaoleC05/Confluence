@@ -12,12 +12,24 @@ Evidence cited as `dsh-internals.md §n` / `fact n` refers to
 refer to the loaded `cordis-plugin-development` skill references. Unverified claims are marked
 `HYPOTHESIS:`.
 
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md)).**
+> This document was written for the v0.1.0 workspace-scoped design. From v0.2.0 the **profile is the
+> memory boundary**: one global scope `ws_0000000000000000` ("All sessions") replaces per-workspace
+> partitions, `WorkspaceResolver` becomes an **origin resolver** used for provenance only, and legacy
+> v0.1.0 workspace journals are merged read-only into every view. Where this document says
+> "workspace-scoped", "per workspace", "same workspace", or shows `workspaces/<wsKey>/` paths, read the
+> single global scope and treat a workspace as `origin:{workspaceKey, workspaceLabel}` metadata. The
+> rest of the architecture (three pillars, process model, module boundaries, poll freshness, watermark
+> fold, no-egress posture) is unchanged. Binding interface delta:
+> [`../plan/scope-refactor-delta.md`](../plan/scope-refactor-delta.md).
+
 ## 1. Architecture at a glance
 
 Three pillars, one plugin mount, no new process, no server, no network, no model call:
 
-1. **Board** — append-only, workspace-scoped typed notes in per-writer JSONL shards under
-   `$DSH_HOME/storages/confluence/v1/`.
+1. **Board** — append-only typed notes in per-writer JSONL shards under
+   `$DSH_HOME/storages/confluence/v1/`; v0.2.0 writes only the single global scope
+   (`workspaces/ws_0000000000000000/`) and merges legacy per-workspace journals read-only.
 2. **Pulse** — one global `ctx.systemPrompt.context()` contribution, rendered synchronously from a
    precomputed in-memory view; byte-stable, so the agent loop commits a runtime-context snapshot
    only when the text actually changes (fact 6).
@@ -38,7 +50,7 @@ plugin mount is one writer (`writerId = <pid>-<8 lowercase hex>`) with its own s
 
 | Component | Owns | Does not own |
 |---|---|---|
-| `WorkspaceResolver` | canonical key, freeze per session, label, collision check | tool authorization (tools call it), path policy inside workspace |
+| `OriginResolver` | canonical path, basename label, best-effort provenance per session (never a partition) | tool authorization, scoping, path policy inside the workspace |
 | `JournalWriter` | own shard append, line encoding, batched fsync, close | merge, tombstones, retention |
 | `StoreMirror` | directory scan, shard/snapshot/presence read, merge, poll/watch, change notification | writes, repairs, repairs-after-corruption |
 | `RecordCodec` | validation, record builders (pure) | I/O, redaction policy details |
@@ -74,9 +86,9 @@ plugin mount is one writer (`writerId = <pid>-<8 lowercase hex>`) with its own s
                                 │ files                         │ M3 host bridge / slots
                                 ▼                               ▼
       $DSH_HOME/storages/confluence/v1/                  client.js (plain browser module)
-        workspaces/<wsKey>/journal.*.v1.jsonl             read-only panel: board, search,
-        workspaces/<wsKey>/presence/<writerId>.json       presence, mark-read, opt-out
-        workspaces/<wsKey>/MANIFEST.v1.json (M4 writes)   poll host 5 s while visible
+        workspaces/ws_0000000000000000/journal.*.v1.jsonl  read-only panel: global board,
+        workspaces/ws_0000000000000000/presence/*.json     search, presence, mark-read
+        (legacy workspaces/ws_<16hex>/ merged read-only)   poll host 5 s while visible
 ```
 
 ## 4. Module and file layout
@@ -373,7 +385,7 @@ cleanup. If an optional service is absent the plugin still activates in its degr
 3. **Resolve the store root**: `$DSH_HOME` from `deps.env` → `homedir()/.dsh`; apply
    `config.store.dir`; probe writability/readability lazily (no write at activation beyond
    `mkdir -p` best-effort). Failure → degraded mode flag, warning, continue.
-4. **Mint `writerId`** and `JournalWriter` factory (one writer, lazily opened per workspace).
+4. **Mint `writerId`** and `JournalWriter` factory (one writer, lazily opened for the global scope).
 5. **Register the watermark projection unit** and keep its handle:
    `handle = await ctx.sessionProjections.register(createWatermarkUnit())` — the host-only
    registration form (`cordis_inspect_query` Service `sessionProjections`): checkpointed, not
@@ -552,14 +564,15 @@ Hard rules (M1 acceptance):
    projection cache (inspect: `ProjectionHandle.stateOf(session): S`); on the first touch the cache
    folds the in-memory log tail, which is CPU, not I/O. It never calls `ctx.sessionQuery`,
    `ctx.agents`, or the store.
-4. **Total.** Never throws: every branch is guarded; unknown agent/session/workspace, disabled pulse,
+4. **Total.** Never throws: every branch is guarded; unknown agent/session/origin, disabled pulse,
    private session, unready view → `''`.
 5. **Byte-stable and bounded.** Text is a pure function of the precomputed view + cursors; identical
    inputs render identical bytes; ≤1 400 chars; target 200–320 tokens measured in M1 (ADR 0001 §8).
    No wall-clock times, ages, running/idle words, file hints, or per-assembly recomputation of
    anything expensive.
 6. **Escaping.** `<`, `&`, U+2028 and U+2029 in any interpolated text become `\uXXXX`; note text can
-   never close or forge the `<confluence-workspace …>` tag.
+   never close or forge the `<confluence-memory …>` wrapper (v0.1.0 snapshots used
+   `<confluence-workspace …>`, still parsed for compatibility).
 7. **Welcome digest.** `digestSeq === null` (no pulse was ever committed for this session) → one
    bounded welcome view: ≤3 newest unread entries, every open question/handoff capped to 2+2 titles,
    counts, peers, guide; the header cursor is the rendered head (or `seq="0"` on an empty board), so
@@ -574,31 +587,34 @@ Hard rules (M1 acceptance):
 
 ## 11. Sequence flows (text)
 
-### F1. First session, empty workspace
+### F1. First session, empty profile (v0.2.0: no workspace needed)
 
-1. DSH creates a session with `header.cwd`; `agent/created` fires (serial). The resolver runs
-   `fs.realpath` + case-fold → `wsKey`, freezes it, records the canonical path.
-2. Store setup is lazy: nothing exists on disk yet. The mirror for this workspace starts empty
+1. DSH creates a session with `header.cwd`; `agent/created` fires (serial). The **origin resolver**
+   runs `fs.realpath` + case-fold for provenance (`origin:{workspaceKey, workspaceLabel}`),
+   best-effort: failure leaves `origin` absent and never blocks memory. The memory scope itself is
+   the constant global scope.
+2. Store setup is lazy: nothing exists on disk yet. The mirror for the global scope starts empty
    (welcome state: `digestSeq = null`).
 3. Pulse renders `''` because there are no entries, no open items, and no peers — zero tokens.
 4. The agent calls `confluence_post`; the board validates, appends
-   `journal.<writerId>.v1.jsonl` (creating dirs, manifest at first mount), `fsync`s, and returns
-   `Recorded on the workspace board (seq <ULID>)` plus `through=` line. Its own entry is excluded
-   from its own unread count.
+   `journal.<writerId>.v1.jsonl` under `workspaces/ws_0000000000000000/` (creating dirs, manifest at
+   first mount), `fsync`s, and returns `Published <id> [kind] in shared memory (seq <ULID>)` plus
+   `through=` line. Its own entry is excluded from its own unread count.
 5. On the next step the pulse renders the welcome digest (1 newest entry, counts) with
    `seq="<head ULID>"`; the loop commits the runtime-context snapshot; the projection folds
    `digestSeq = head`. Step 6 sees the identical text → zero new tokens.
 6. Turn end writes a ledger row and a presence heartbeat.
 
-### F2. Second session joins the same workspace
+### F2. Second session in another directory sees the same memory
 
-1. `agent/created` → resolver canonicalizes its `header.cwd`; the same path (case/symlink variants
-   converge) → the same `wsKey`; the mirror is warm from the poll of the first session's mount.
+1. `agent/created` → the origin resolver canonicalizes its `header.cwd` (a different directory is
+   fine); the global mirror is shared, so no per-directory lookup is involved.
 2. The second session's pulse at its first step is a welcome digest (its own `digestSeq = null`)
    containing F1's note and the open items; it commits `digestSeq = head` and stops repeating.
-3. Its presence heartbeat appears in the workspace; within one poll the first session's pulse
+3. Its presence heartbeat appears in the global store; within one poll the first session's pulse
    changes peer count → one new snapshot.
-4. Both sessions keep distinct writer ids, shards, and presence files.
+4. Both sessions keep distinct writer ids, shards, and presence files; entries carry different
+   `origin` labels.
 
 ### F3. Session A posts; session B sees the pulse
 
@@ -627,11 +643,10 @@ Hard rules (M1 acceptance):
 
 ### F5. Recall + read
 
-1. The model calls `confluence_recall({query})`. The tool resolves the caller's workspace from
-   `exec.agent`; `ctx.sessionQuery` must exist, else a one-line error.
-2. `listSessions()` (not the raw-string `cwd` filter — dsh-internals §4.1 correction) → for each
-   record canonicalize `header.cwd` (and the live effective dir where available) → keep only the
-   caller's `wsKey` → drop the caller → sort by recency → take 3.
+1. The model calls `confluence_recall({query})`. `ctx.sessionQuery` must exist, else a one-line
+   error. There is no workspace filter in v0.2.0: every earlier session in the profile is eligible.
+2. `listSessions()` (not the raw-string `cwd` filter — dsh-internals §4.1 correction) → drop the
+   caller and `privacy.privateSessions` targets → sort by recency → take 3.
 3. For each session, `filterEvents(sessionId, [{kind:'text', text: query}])` (literal,
    case-insensitive, no FTS — fact 24) under a cooperative 5 s deadline (checked between
    sessions/hits); collect ≤5 hits total; redact, excerpt ≤600 chars, frame as untrusted, add
@@ -646,12 +661,10 @@ Hard rules (M1 acceptance):
 ### F6. Private / opt-out session
 
 1. Configuration `privacy.privateSessions` (user-owned) or the M3 panel opt-out marks a session
-   private before its first agent step (by session id; the panel can set it for future sessions of
-   the workspace).
+   private before its first agent step (by session id).
 2. `agent/created`: the plugin registers a scoped suppressor on `agent.ctx`
    (`suppressRuntimeContext()` — `HYPOTHESIS:` exact method name per round-2 correction) inside
-   `agent.ctx.effect`, keeps the disposer in its own map, and marks the session private in the
-   resolver.
+   `agent.ctx.effect`, keeps the disposer in its own map, and records the session id as private.
 3. Consequences: the pulse provider returns `''` for that session; `tools.resolve` hides the six
    tools (`options.when` false — design choice, stronger than ADR's minimum: a private session
    cannot post either); the ledger emits no `session` rows and the presence file omits the session
@@ -659,7 +672,8 @@ Hard rules (M1 acceptance):
 4. Rows written before the opt-out are append-only and remain (the panel marks the session
    "previously shared"); M4 provides a tombstone path for a user deletion. Nothing is ever deleted
    from the session log (DSH owns it).
-5. `disabledWorkspaces` does the same at workspace granularity for all sessions.
+5. v0.2.0: there is **no workspace-level opt-out** — `privacy.disabledWorkspaces` was removed with
+   the workspace boundary (ADR 0007 §6); the profile-wide scope is the product.
 
 ### F7. Plugin unload / reload
 

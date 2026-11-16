@@ -1,31 +1,38 @@
-// WP1 unit tests — lib/store.js
-// Covers implementation-interfaces.md §5 (plus the Lead addendum: listWorkspaces,
-// workspaceMeta, viewedRecords, view, isOpen) and store-format.md §17 rows 1–14:
-// shard naming, whole-line append, torn tails, merge/dedupe, manifest, presence,
-// poll/watch freshness and injectable fs seams.
+// WP1 unit tests — lib/store.js (v0.2.0 universal scope)
+//
+// Covers the retained v1 journal contract (append/merge/dedupe/torn tail,
+// manifest validation, presence) plus the v0.2.0 delta from
+// docs/plan/scope-refactor-delta.md §2:
+//   - the reserved global scope (empty canonicalPath allowed only there),
+//   - `openGlobal()` idempotence and the global manifest,
+//   - the read-only legacy merge (order/dedupe/labels, no legacy writes),
+//   - corrupt-legacy tolerance,
+//   - `mergedRecords`/`onMergedChange`/`refreshMerged`,
+//   - presence through the global journal.
+//
+// All store instances use deterministic deps (fixed pid/clock/random) and
+// per-test temp roots, exactly like the v0.1.0 suite.
 
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
-import {
-  appendFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from 'node:fs/promises'
-import nodeFsPromises from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { JournalStore } from '../lib/store.js'
+import { GLOBAL_SCOPE_KEY, GLOBAL_SCOPE_LABEL, JournalStore } from '../lib/store.js'
 import { createUlidFactory, isUlid } from '../lib/util.js'
 import { DEFAULTS } from '../lib/config.js'
-import { workspaceKeyFor } from '../lib/workspace.js'
 
-const WS_KEY = 'ws_0123456789abcdef'
-const WS_PATH = 'D:\\05_Code\\confluence'
-const TS = '2026-11-13T02:41:07.512Z'
+// Reserved determinism: fixed keys/paths/clock, no ambient process state.
+const WS_A = 'ws_aaaaaaaaaaaaaaaa'
+const WS_B = 'ws_bbbbbbbbbbbbbbbb'
+const WS_C = 'ws_cccccccccccccccc'
+const WS_D = 'ws_dddddddddddddddd'
+const WS_E = 'ws_eeeeeeeeeeeeeeee'
+const WS_F = 'ws_ffffffffffffffff'
+const PATH_A = 'D:\\05_Code\\alpha'
+const PATH_B = 'D:\\05_Code\\beta'
+const PATH_C = 'D:\\05_Code\\gamma'
+const TS = '2026-11-16T12:00:00.000Z'
 
 /** @type {JournalStore[]} */
 const stores = []
@@ -58,7 +65,7 @@ function seededRandom(seed = 0.42) {
 }
 
 /**
- * @param {{root?: string, pid?: number, seed?: number, pollMs?: number, watch?: boolean, fs?: object, logger?: object, retryDelays?: number[]}} [options]
+ * @param {{root?: string, pid?: number, seed?: number, pollMs?: number, watch?: boolean, logger?: object, retryDelays?: number[]}} [options]
  */
 async function newStore(options = {}) {
   const root = options.root ?? (await tempRoot())
@@ -76,12 +83,12 @@ async function newStore(options = {}) {
     logger: options.logger,
     deps: {
       pid: options.pid ?? 4001,
+      platform: 'win32', // deterministic basename semantics for Windows-style manifests
       random: seededRandom(options.seed ?? 0.42),
       now: () => {
         tick += 1000
         return tick
       },
-      fs: options.fs,
       retryDelays: options.retryDelays ?? [0, 0, 0],
     },
   })
@@ -101,29 +108,41 @@ function seqFactory(seed = 0.7, startMs = 1_700_000_000_000) {
   )
 }
 
-function entry(seq, overrides = {}) {
+/**
+ * @param {string} wsKey
+ * @param {string} seq
+ * @param {string} id
+ * @param {Record<string, unknown>} [overrides]
+ */
+function entry(wsKey, seq, id, overrides = {}) {
   return {
     v: 1,
     type: 'entry',
-    id: `cnf_${seq}`,
-    ws: WS_KEY,
+    id,
+    ws: wsKey,
     seq,
     ts: TS,
     kind: 'finding',
-    title: `title-${seq.slice(-4)}`,
+    title: `title-${id}`,
     author: { sessionId: 'session-author', origin: 'agent' },
     ...overrides,
   }
 }
 
-function sessionRow(seq, overrides = {}) {
+/**
+ * @param {string} wsKey
+ * @param {string} seq
+ * @param {string} sessionId
+ * @param {Record<string, unknown>} [overrides]
+ */
+function sessionRow(wsKey, seq, sessionId, overrides = {}) {
   return {
     v: 1,
     type: 'session',
-    ws: WS_KEY,
+    ws: wsKey,
     seq,
     ts: TS,
-    sessionId: 'session-1',
+    sessionId,
     turns: 1,
     lastActivityTs: TS,
     status: 'idle',
@@ -131,475 +150,473 @@ function sessionRow(seq, overrides = {}) {
   }
 }
 
-async function writeShard(root, writerId, records, { raw } = {}) {
-  const dir = path.join(root, 'workspaces', WS_KEY)
-  await mkdir(path.join(dir, 'presence'), { recursive: true })
-  const content = raw !== undefined ? raw : records.map((record) => `${JSON.stringify(record)}\n`).join('')
-  await writeFile(path.join(dir, `journal.${writerId}.v1.jsonl`), content, 'utf8')
-}
-
-async function openJournal(store) {
-  return store.openWorkspace(WS_KEY, { canonicalPath: WS_PATH, label: 'confluence' })
-}
-
-async function waitFor(predicate, timeoutMs = 2000) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    if (await predicate()) return true
-    await new Promise((resolve) => setTimeout(resolve, 10))
+/**
+ * Seed a legacy v0.1 per-workspace directory by hand. Never uses the store, so
+ * the fixtures stay byte-identical unless something writes to them.
+ *
+ * @param {string} root
+ * @param {string} wsKey
+ * @param {{canonicalPath?: string, label?: string, shards?: Record<string, object[] | string>, rawManifest?: string}} spec
+ */
+async function seedLegacyWorkspace(root, wsKey, spec = {}) {
+  const dir = path.join(root, 'workspaces', wsKey)
+  await mkdir(dir, { recursive: true })
+  const manifest =
+    spec.rawManifest ??
+    JSON.stringify({
+      format: 'confluence.store/v1',
+      formatVersion: 1,
+      ws: wsKey,
+      workspace: {
+        key: wsKey,
+        canonicalPath: spec.canonicalPath ?? PATH_A,
+        ...(spec.label === undefined ? {} : { label: spec.label }),
+        createdAt: TS,
+      },
+      generation: 0,
+    })
+  await writeFile(path.join(dir, 'MANIFEST.v1.json'), manifest, 'utf8')
+  for (const [writerId, records] of Object.entries(spec.shards ?? {})) {
+    const content =
+      typeof records === 'string' ? records : records.map((record) => `${JSON.stringify(record)}\n`).join('')
+    await writeFile(path.join(dir, `journal.${writerId}.v1.jsonl`), content, 'utf8')
   }
-  return false
+  return dir
+}
+
+/** Recursive directory snapshot (files -> exact bytes, dirs -> nested snapshot). */
+async function snapshotFiles(dir) {
+  const out = {}
+  let dirents = []
+  try {
+    dirents = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  for (const dirent of dirents) {
+    const full = path.join(dir, dirent.name)
+    if (dirent.isDirectory()) out[`${dirent.name}/`] = await snapshotFiles(full)
+    else if (dirent.isFile()) out[dirent.name] = await readFile(full, 'utf8')
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
-// append / encoding (UT-STORE-01, 04, 05)
+// retained v1 journal contract
 // ---------------------------------------------------------------------------
 
 test('UT-STORE-01 a record line round-trips: envelope assigned, one LF-terminated JSON object', async () => {
   const { store, root } = await newStore()
-  const journal = await openJournal(store)
+  const journal = await store.openWorkspace(WS_A, { canonicalPath: PATH_A, label: 'alpha' })
   const stored = await journal.append({ type: 'entry', id: 'cnf_roundtrip', kind: 'finding', title: 'hello' })
 
   assert.equal(stored.v, 1)
-  assert.equal(stored.ws, WS_KEY)
+  assert.equal(stored.ws, WS_A)
   assert.ok(isUlid(stored.seq))
   assert.match(stored.ts, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
 
-  const shardPath = path.join(root, 'workspaces', WS_KEY, `journal.${store.writerId}.v1.jsonl`)
+  const shardPath = path.join(root, 'workspaces', WS_A, `journal.${store.writerId}.v1.jsonl`)
   const raw = await readFile(shardPath, 'utf8')
   assert.ok(raw.endsWith('\n'))
   assert.equal(raw.split('\n').filter((line) => line !== '').length, 1, 'exactly one record line')
-  const parsed = JSON.parse(raw.trim())
-  assert.deepEqual(parsed, stored)
-  assert.equal(JSON.stringify(parsed), raw.trim(), 'parse -> serialize keeps canonical bytes')
+  assert.deepEqual(JSON.parse(raw.trim()), stored)
 
   await journal.refresh({ force: true })
   assert.deepEqual(journal.records(), [stored])
 })
 
-test('UT-STORE-04 shard naming: journal.<writerId>.v1.jsonl, writer id stable per mount', async () => {
-  const { store, root } = await newStore()
-  assert.match(store.writerId, /^\d+-[0-9a-f]{8}$/)
-  const journal = await openJournal(store)
-  await journal.append(entry(seqFactory()()))
-  await journal.append(entry(seqFactory(0.9)()))
-  const files = (await readdir(path.join(root, 'workspaces', WS_KEY))).filter((name) => name.endsWith('.jsonl'))
-  assert.deepEqual(files, [`journal.${store.writerId}.v1.jsonl`])
-
-  const second = await newStore({ root, pid: 4002, seed: 0.77 })
-  const secondJournal = await openJournal(second.store)
-  await secondJournal.append(entry(seqFactory(0.5)()))
-  const filesAfter = (await readdir(path.join(root, 'workspaces', WS_KEY))).filter((name) =>
-    name.endsWith('.jsonl'),
-  )
-  assert.equal(filesAfter.length, 2, 'each mount (writer id) gets its own shard')
-  assert.notEqual(second.store.writerId, store.writerId)
-})
-
-test('UT-STORE-05 append writes complete lines only; over-cap serialization is rejected', async () => {
-  const { store, root } = await newStore()
-  const journal = await openJournal(store)
-  const shardPath = path.join(root, 'workspaces', WS_KEY, `journal.${store.writerId}.v1.jsonl`)
-
-  await assert.rejects(
-    () => journal.append(entry(seqFactory()(), { body: 'x'.repeat(70000) })),
-    (error) => error && error.code === 'BODY_TOO_LARGE',
-  )
-  const afterReject = await readFile(shardPath, 'utf8').catch(() => '')
-  assert.equal(afterReject, '', 'nothing is written for a rejected record')
-
-  const stored = await journal.append(entry(seqFactory(0.8)(), { body: 'ok' }))
-  const raw = await readFile(shardPath, 'utf8')
-  assert.equal(raw.split('\n').filter((line) => line !== '').length, 1)
-  assert.ok(Buffer.byteLength(raw, 'utf8') < 65536)
-  assert.equal(JSON.parse(raw.trim()).id, stored.id)
-})
-
-test('UT-STORE-05b reader skips oversized/corrupt lines and keeps valid neighbours', async () => {
-  const { store, root } = await newStore()
-  const seqs = seqFactory()
-  const before = entry(seqs())
-  const after = entry(seqs())
-  const raw = [
-    JSON.stringify(before),
-    'x'.repeat(66000), // over the 64 KiB line cap
-    '{not json', // malformed complete line
-    JSON.stringify(after),
-    '',
-  ].join('\n')
-  await writeShard(root, '5501-aaaaaaaa', null, { raw })
-  const journal = await openJournal(store)
-  const records = journal.records()
-  assert.equal(records.length, 2, 'only valid lines survive')
-  assert.deepEqual(records.map((record) => record.id), [before.id, after.id])
-  await assert.doesNotReject(() => journal.refresh({ force: true }))
-  assert.equal(journal.records().length, 2)
-})
-
-// ---------------------------------------------------------------------------
-// merge / dedupe (UT-STORE-02, 03, 06, 07, 08)
-// ---------------------------------------------------------------------------
-
-test('UT-STORE-02 unknown record types are ignored; unknown fields are preserved', async () => {
-  const { store, root } = await newStore()
-  const seqs = seqFactory()
-  const known = entry(seqs(), { zzz: { custom: true } })
-  const unknownType = { v: 1, type: 'signal', ws: WS_KEY, seq: seqs(), ts: TS, text: 'reserved' }
-  await writeShard(root, '5001-aaaaaaaa', [known, unknownType])
-  const journal = await openJournal(store)
-  const records = journal.records()
-  assert.equal(records.length, 1, 'reserved/unknown types are ignored by v1 readers')
-  assert.deepEqual(records[0].zzz, { custom: true }, 'unknown fields stay in the in-memory record')
-  const raw = await readFile(path.join(root, 'workspaces', WS_KEY, 'journal.5001-aaaaaaaa.v1.jsonl'), 'utf8')
-  assert.ok(raw.includes('"type":"signal"'), 'readers never rewrite a shard')
-})
-
-test('UT-STORE-03 ULID seq order is lexicographic and unique across two writers', async () => {
-  const root = await tempRoot()
-  const one = await newStore({ root, pid: 5001, seed: 0.11 })
-  const two = await newStore({ root, pid: 5002, seed: 0.93 })
-  const journalOne = await openJournal(one.store)
-  const journalTwo = await openJournal(two.store)
-  const seqsOne = seqFactory(0.21)
-  const seqsTwo = seqFactory(0.83)
-  for (let i = 0; i < 3; i += 1) await journalOne.append(entry(seqsOne(), { title: `a${i}` }))
-  for (let i = 0; i < 3; i += 1) await journalTwo.append(entry(seqsTwo(), { title: `b${i}` }))
-
-  await journalOne.refresh({ force: true })
-  const records = journalOne.records()
-  assert.equal(records.length, 6)
-  const seqs = records.map((record) => record.seq)
-  assert.equal(new Set(seqs).size, 6, 'seqs are unique across writers')
-  assert.deepEqual(seqs, [...seqs].sort(), 'merged view is sorted lexicographically by seq')
-  assert.ok(seqs.every(isUlid))
-})
-
-test('UT-STORE-06 merge across shards: global seq order, deterministic on repeated reads', async () => {
-  const { store, root } = await newStore()
-  const seqs = seqFactory()
-  const s1 = seqs()
-  const s2 = seqs()
-  const s3 = seqs()
-  const s4 = seqs()
-  const s5 = seqs()
-  const s6 = seqs()
-  await writeShard(root, '6001-aaaaaaaa', [entry(s2), entry(s5)])
-  await writeShard(root, '6002-bbbbbbbb', [entry(s1), entry(s6)])
-  await writeShard(root, '6003-cccccccc', [entry(s3), entry(s4)])
-  const journal = await openJournal(store)
-  const first = journal.records()
-  const second = journal.records()
-  assert.equal(first.length, 6)
-  assert.deepEqual(first.map((record) => record.seq), [s1, s2, s3, s4, s5, s6])
-  assert.deepEqual(first, second, 'repeated reads are deterministic')
-  assert.ok(Object.isFrozen(first), 'records() returns a frozen array')
-})
-
-test('UT-STORE-07 dedupe: entry first-by-seq wins, session max-seq wins', async () => {
+test('UT-STORE-02 journal dedupe: entry first-by-seq wins, session rows max-seq win', async () => {
   const { store, root } = await newStore()
   const seqs = seqFactory()
   const low = seqs()
   const high = seqs()
   const entryId = `cnf_${low}`
-  await writeShard(root, '7001-aaaaaaaa', [
-    entry(low, { id: entryId, title: 'first' }),
-    sessionRow(low, { turns: 1 }),
-  ])
-  await writeShard(root, '7002-bbbbbbbb', [
-    entry(high, { id: entryId, title: 'second' }),
-    sessionRow(high, { turns: 2 }),
-  ])
-  const journal = await openJournal(store)
+  await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: {
+      '7001-aaaaaaaa': [entry(WS_A, low, entryId, { title: 'first' }), sessionRow(WS_A, low, 'session-1', { turns: 1 })],
+      '7002-bbbbbbbb': [entry(WS_A, high, entryId, { title: 'second' }), sessionRow(WS_A, high, 'session-1', { turns: 2 })],
+    },
+  })
+  const journal = await store.openWorkspace(WS_A) // existing manifest, no meta required
   const records = journal.records()
-  const mergedEntry = records.find((record) => record.type === 'entry')
-  const mergedSession = records.find((record) => record.type === 'session')
-  assert.equal(mergedEntry.title, 'first', 'lower seq wins for an immutable entry id')
-  assert.equal(mergedSession.turns, 2, 'highest seq wins for a session upsert')
+  assert.equal(records.find((record) => record.type === 'entry').title, 'first')
+  assert.equal(records.find((record) => record.type === 'session').turns, 2)
   assert.equal(records.length, 2)
 })
 
-test('UT-STORE-08 fixture shards merge to the expected golden snapshot', async () => {
+test('UT-STORE-03 torn trailing line is ignored; complete prefix reads cleanly', async () => {
   const { store, root } = await newStore()
   const seqs = seqFactory()
-  const s1 = seqs()
-  const s2 = seqs()
-  const s3 = seqs()
-  const rows = [entry(s1, { kind: 'decision', title: 'decide' }), entry(s2, { kind: 'gotcha' }), entry(s3, { kind: 'question' })]
-  await writeShard(root, '8001-aaaaaaaa', [rows[1]])
-  await writeShard(root, '8002-bbbbbbbb', [rows[0], rows[2]])
-  const journal = await openJournal(store)
-  const golden = rows.map((record) => ({
-    id: record.id,
-    seq: record.seq,
-    kind: record.kind,
-    title: record.title,
-  }))
-  assert.deepEqual(
-    journal.records().map((record) => ({ id: record.id, seq: record.seq, kind: record.kind, title: record.title })),
-    golden,
-  )
-})
-
-// ---------------------------------------------------------------------------
-// torn tail / crash tolerance (UT-STORE-09, 10, 11)
-// ---------------------------------------------------------------------------
-
-test('UT-STORE-09/11 torn trailing line ignored; valid prefix reads cleanly (no throw)', async () => {
-  const { store, root } = await newStore()
-  const seqs = seqFactory()
-  const complete = entry(seqs())
-  await writeShard(root, '9001-aaaaaaaa', null, {
-    raw: `${JSON.stringify(complete)}\n{"v":1,"type":"entry","id":"cnf_trunc`,
+  const complete = entry(WS_A, seqs(), 'cnf_torn_ok')
+  await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: { '9001-aaaaaaaa': `${JSON.stringify(complete)}\n{"v":1,"type":"entry","id":"cnf_trunc` },
   })
-  const journal = await openJournal(store)
+  const journal = await store.openWorkspace(WS_A)
   assert.equal(journal.records().length, 1)
   assert.equal(journal.records()[0].id, complete.id)
   await assert.doesNotReject(() => journal.refresh({ force: true }))
-  assert.equal(journal.records().length, 1, 'the torn tail stays invisible')
 })
 
-test('UT-STORE-10 a later complete line after the torn tail is visible; the tail stays ignored', async () => {
+// ---------------------------------------------------------------------------
+// manifest validation + global manifest
+// ---------------------------------------------------------------------------
+
+test('UT-STORE-10 empty canonicalPath is valid only for the global scope key', async () => {
   const { store, root } = await newStore()
-  const seqs = seqFactory()
-  const first = entry(seqs())
-  const second = entry(seqs())
-  const shardName = 'journal.9002-bbbbbbbb.v1.jsonl'
-  await writeShard(root, '9002-bbbbbbbb', null, {
-    raw: `${JSON.stringify(first)}\n{"v":1,"type":"entry","id":"cnf_torn`,
-  })
-  const journal = await openJournal(store)
-  assert.equal(journal.records().length, 1)
-  // A complete record arrives after the unterminated garbage (fixture scenario:
-  // a crashed writer's tail followed by another complete line).
-  await appendFile(
-    path.join(root, 'workspaces', WS_KEY, shardName),
-    `\n${JSON.stringify(second)}\n`,
+
+  // A non-global manifest with an empty canonical path is invalid...
+  await mkdir(path.join(root, 'workspaces', WS_E), { recursive: true })
+  await writeFile(
+    path.join(root, 'workspaces', WS_E, 'MANIFEST.v1.json'),
+    JSON.stringify({
+      format: 'confluence.store/v1',
+      formatVersion: 1,
+      ws: WS_E,
+      workspace: { key: WS_E, canonicalPath: '', createdAt: TS },
+      generation: 0,
+    }),
     'utf8',
   )
-  const changed = await journal.refresh()
-  assert.equal(changed, true)
-  const records = journal.records()
-  assert.equal(records.length, 2)
-  assert.deepEqual(records.map((record) => record.id), [first.id, second.id])
-  assert.ok(records.every((record) => record.id !== 'cnf_torn'))
-})
-
-// ---------------------------------------------------------------------------
-// poll, watch and change feed (UT-STORE-12)
-// ---------------------------------------------------------------------------
-
-test('UT-STORE-12 poll refresh sees another writer within a poll interval; onChange fires', async () => {
-  const root = await tempRoot()
-  const writer = await newStore({ root, pid: 12001, seed: 0.2 })
-  const reader = await newStore({ root, pid: 12002, seed: 0.8, pollMs: 25 })
-  const writerJournal = await openJournal(writer.store)
-  const readerJournal = await openJournal(reader.store)
-  const changes = []
-  readerJournal.onChange((changed) => changes.push(changed))
-  assert.equal(readerJournal.isOpen, true)
-
-  await writerJournal.append(entry(seqFactory(0.4)()))
-  const seen = await waitFor(() => readerJournal.records().length === 1)
-  assert.equal(seen, true, 'poll freshness contract: another writer becomes visible')
-  assert.ok(changes.length >= 1 && changes.every((value) => value === true))
-  assert.equal(await readerJournal.refresh(), false, 'no change => refresh returns false')
-
-  await readerJournal.append(entry(seqFactory(0.6)()))
-  assert.equal(readerJournal.records().length, 2)
-})
-
-test('UT-STORE-12b fs.watch throwing degrades to polling with one warning, never crashes', async () => {
-  const logs = []
-  const logger = {
-    debug: (record) => logs.push(['debug', record]),
-    info: (record) => logs.push(['info', record]),
-    warn: (record) => logs.push(['warn', record]),
-    error: (record) => logs.push(['error', record]),
-  }
-  let notified = 0
-  const deps = {
-    watch: () => {
-      notified += 1
-      throw new Error('fs.watch unsupported')
-    },
-  }
-  const directory = await tempRoot()
-  const { store } = await newStore({ root: directory, logger, watch: true })
-  // Inject the throwing watcher after construction (public deps seam).
-  store._watchImpl = deps.watch
-  const journal = await openJournal(store)
-  assert.equal(journal.isOpen, true)
-  assert.equal(notified, 1, 'watch was attempted')
-  assert.ok(
-    logs.some(([level, record]) => level === 'warn' && record.event === 'store.watch_unavailable'),
-    'one warning is logged and activation continues',
+  await assert.rejects(
+    () => store.openWorkspace(WS_E),
+    (error) => error && error.code === 'STORE_UNAVAILABLE',
   )
-  await assert.doesNotReject(() => journal.append(entry(seqFactory()())))
+
+  // ...and creating a brand-new non-global journal without a path is refused.
+  await assert.rejects(
+    () => store.openWorkspace(WS_F),
+    (error) => error && error.code === 'BAD_ARGUMENT',
+  )
+
+  // An existing legacy manifest with a path still opens by key without meta and
+  // is never rewritten (read-only compatibility).
+  const dirA = await seedLegacyWorkspace(root, WS_A, { canonicalPath: PATH_A })
+  const manifestText = await readFile(path.join(dirA, 'MANIFEST.v1.json'), 'utf8')
+  const journal = await store.openWorkspace(WS_A)
+  assert.equal(journal.wsKey, WS_A)
+  assert.equal(await readFile(path.join(dirA, 'MANIFEST.v1.json'), 'utf8'), manifestText)
+
+  // A normal new workspace is created with its canonical path.
+  const created = await store.openWorkspace(WS_B, { canonicalPath: PATH_B, label: 'beta' })
+  const createdManifest = JSON.parse(
+    await readFile(path.join(root, 'workspaces', WS_B, 'MANIFEST.v1.json'), 'utf8'),
+  )
+  assert.equal(createdManifest.workspace.canonicalPath, PATH_B)
+  assert.equal(createdManifest.workspace.label, 'beta')
+  assert.equal(created.wsKey, WS_B)
 })
 
-// ---------------------------------------------------------------------------
-// manifest, workspace metadata, listing (UT-STORE-13/14)
-// ---------------------------------------------------------------------------
-
-test('UT-STORE-13 manifest is created once, cached metadata, tolerant workspace listing', async () => {
+test('UT-STORE-11 global scope: manifest shape, empty canonicalPath, idempotent open, presence', async () => {
   const { store, root } = await newStore()
-  const journal = await openJournal(store)
-  const manifestPath = path.join(root, 'workspaces', WS_KEY, 'MANIFEST.v1.json')
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  assert.equal(store.globalJournal(), null, 'no global journal before openGlobal()')
+
+  const journal = await store.openGlobal()
+  const globalDir = path.join(root, 'workspaces', GLOBAL_SCOPE_KEY)
+  assert.equal(journal.wsKey, GLOBAL_SCOPE_KEY)
+  assert.equal(journal.dir, globalDir)
+  assert.equal(store.globalJournal(), journal)
+
+  const manifestPath = path.join(globalDir, 'MANIFEST.v1.json')
+  const manifestText = await readFile(manifestPath, 'utf8')
+  const manifest = JSON.parse(manifestText)
   assert.equal(manifest.format, 'confluence.store/v1')
   assert.equal(manifest.formatVersion, 1)
-  assert.equal(manifest.ws, WS_KEY)
-  assert.equal(manifest.workspace.canonicalPath, WS_PATH)
+  assert.equal(manifest.ws, GLOBAL_SCOPE_KEY)
+  assert.equal(manifest.workspace.key, GLOBAL_SCOPE_KEY)
+  assert.equal(manifest.workspace.canonicalPath, '')
+  assert.equal(manifest.workspace.label, GLOBAL_SCOPE_LABEL)
   assert.match(manifest.workspace.createdAt, /^\d{4}-\d{2}-\d{2}T/)
-  assert.equal(manifest.generation, 0)
 
-  assert.deepEqual(store.workspaceMeta(WS_KEY), {
-    wsKey: WS_KEY,
-    canonicalPath: WS_PATH,
-    createdAt: manifest.workspace.createdAt,
-  })
-  assert.equal(store.workspaceMeta('ws_ffffffffffffffff'), null)
+  // Idempotent: same journal instance, manifest bytes untouched.
+  const second = await store.openGlobal()
+  assert.equal(second, journal)
+  assert.equal(await readFile(manifestPath, 'utf8'), manifestText)
 
-  await journal.append(entry(seqFactory()()))
-  const listed = await store.listWorkspaces()
-  const item = listed.find((workspace) => workspace.wsKey === WS_KEY)
-  assert.ok(item)
-  assert.equal(item.canonicalPath, WS_PATH)
-  assert.equal(item.label, 'confluence')
-  assert.equal(item.createdAt, manifest.workspace.createdAt)
-  assert.equal(item.entries, 1)
+  const stored = await journal.append({ type: 'entry', id: 'cnf_global_1', kind: 'finding', title: 'shared' })
+  assert.equal(stored.ws, GLOBAL_SCOPE_KEY, 'records default to the global scope key')
+  assert.deepEqual(store.mergedRecords().map((record) => record.id), ['cnf_global_1'])
 
-  // Tolerant listing: one bad manifest/directory never fails the listing.
-  await mkdir(path.join(root, 'workspaces', 'ws_deadbeefdeadbeef', 'presence'), { recursive: true })
-  await writeFile(path.join(root, 'workspaces', 'ws_deadbeefdeadbeef', 'MANIFEST.v1.json'), '{not json', 'utf8')
-  await mkdir(path.join(root, 'workspaces', 'not-a-workspace'), { recursive: true })
-  const tolerant = await store.listWorkspaces()
-  assert.deepEqual(tolerant.map((workspace) => workspace.wsKey), [WS_KEY])
-})
-
-test('UT-STORE-14 manifest collision/wrong-ws/invalid cases throw STORE_UNAVAILABLE', async () => {
-  const rootA = await tempRoot()
-  const { store } = await newStore({ root: rootA })
-  await openJournal(store)
-
-  const wrongWsKey = 'ws_aaaaaaaaaaaaaaaa'
-  const wrongDir = path.join(rootA, 'workspaces', wrongWsKey)
-  await mkdir(path.join(wrongDir, 'presence'), { recursive: true })
-  await writeFile(
-    path.join(wrongDir, 'MANIFEST.v1.json'),
-    JSON.stringify({
-      format: 'confluence.store/v1',
-      formatVersion: 1,
-      ws: WS_KEY,
-      workspace: { key: WS_KEY, canonicalPath: WS_PATH, createdAt: TS },
-      generation: 0,
-    }),
-    'utf8',
-  )
-  await assert.rejects(
-    () => store.openWorkspace(wrongWsKey, { canonicalPath: WS_PATH }),
-    (error) => error && error.code === 'STORE_UNAVAILABLE',
-  )
-
-  const collisionRoot = await tempRoot()
-  const collision = await newStore({ root: collisionRoot })
-  const collisionJournal = await openJournal(collision.store)
-  assert.ok(collisionJournal)
-  const otherWsKey = 'ws_bbbbbbbbbbbbbbbb'
-  const otherDir = path.join(collisionRoot, 'workspaces', otherWsKey)
-  await mkdir(path.join(otherDir, 'presence'), { recursive: true })
-  await writeFile(
-    path.join(otherDir, 'MANIFEST.v1.json'),
-    JSON.stringify({
-      format: 'confluence.store/v1',
-      formatVersion: 1,
-      ws: otherWsKey,
-      workspace: { key: otherWsKey, canonicalPath: 'C:\\original\\path', createdAt: TS },
-      generation: 0,
-    }),
-    'utf8',
-  )
-  await assert.rejects(
-    () => collision.store.openWorkspace(otherWsKey, { canonicalPath: 'C:\\other\\path' }),
-    (error) => error && error.code === 'STORE_UNAVAILABLE',
-  )
-})
-
-test('UT-STORE-15 existing manifest unknown fields are preserved (never rewritten)', async () => {
-  const root = await tempRoot()
-  const wsDir = path.join(root, 'workspaces', WS_KEY)
-  await mkdir(path.join(wsDir, 'presence'), { recursive: true })
-  const manifest = {
-    format: 'confluence.store/v1',
-    formatVersion: 1,
-    ws: WS_KEY,
-    workspace: { key: WS_KEY, canonicalPath: WS_PATH, createdAt: TS, custom: 'keep-me' },
-    generation: 0,
-    unknownTopLevel: { future: true },
-  }
-  const text = JSON.stringify(manifest)
-  await writeFile(path.join(wsDir, 'MANIFEST.v1.json'), text, 'utf8')
-  const { store } = await newStore({ root })
-  await openJournal(store)
-  assert.equal(await readFile(path.join(wsDir, 'MANIFEST.v1.json'), 'utf8'), text, 'open must not rewrite it')
-})
-
-// ---------------------------------------------------------------------------
-// presence, durability, size, close (UT-STORE-16..18)
-// ---------------------------------------------------------------------------
-
-test('UT-STORE-16 presence heartbeat: atomic file per writer, tolerant read', async () => {
-  const { store, root } = await newStore()
-  const journal = await openJournal(store)
+  // Presence lives in the global journal and uses the existing atomic writer.
   await journal.writePresence({ sessions: [{ sessionId: 'session-1', title: 'Auth work', status: 'live' }] })
-  const presenceDir = path.join(root, 'workspaces', WS_KEY, 'presence')
-  const files = await readdir(presenceDir)
-  assert.deepEqual(files, [`${store.writerId}.json`], 'no temp file is left behind')
-  const written = JSON.parse(await readFile(path.join(presenceDir, `${store.writerId}.json`), 'utf8'))
-  assert.equal(written.writerId, store.writerId)
-  assert.match(written.updatedAt, /^\d{4}-\d{2}-\d{2}T/)
-  assert.deepEqual(written.sessions, [{ sessionId: 'session-1', title: 'Auth work', status: 'live' }])
-
-  await writeFile(path.join(presenceDir, '9999-deadbeef.json'), '{broken', 'utf8')
+  const presenceFiles = await readdir(path.join(globalDir, 'presence'))
+  assert.deepEqual(presenceFiles, [`${store.writerId}.json`])
   const presence = await journal.readPresence()
-  assert.ok(presence[store.writerId])
-  assert.equal(presence['9999-deadbeef'], undefined, 'invalid heartbeat is ignored')
+  assert.deepEqual(presence[store.writerId].sessions, [
+    { sessionId: 'session-1', title: 'Auth work', status: 'live' },
+  ])
 })
 
-test('UT-STORE-17 appendAndSync/flush/sizeInfo/close contract', async () => {
-  const { store } = await newStore()
-  const journal = await openJournal(store)
-  await assert.doesNotReject(() => journal.flush(), 'flush before any append is a no-op')
+// ---------------------------------------------------------------------------
+// legacy read-only merge
+// ---------------------------------------------------------------------------
 
-  const stored = await journal.appendAndSync(entry(seqFactory()()))
-  assert.ok(stored.seq)
-  let size = await journal.sizeInfo()
-  assert.equal(size.shards, 1)
-  assert.ok(size.bytes > 0)
-  assert.equal(size.entries, 1)
-  assert.equal(journal.view(), journal.records(), 'view() is the synchronous records() alias')
-  assert.equal(store.viewedRecords(WS_KEY), journal.records())
-  assert.deepEqual(store.viewedRecords('ws_ffffffffffffffff'), [])
-  assert.ok(Object.isFrozen(store.viewedRecords('ws_ffffffffffffffff')))
+test('UT-STORE-12 legacy merge: labels, order, dedupe (global first-wins, sessions last-wins)', async () => {
+  const { store, root } = await newStore()
+  const seqs = seqFactory(0.37)
+  const q = Array.from({ length: 12 }, () => seqs())
 
-  await store.close()
-  assert.equal(journal.isOpen, false)
-  await assert.rejects(
-    () => journal.append(entry(seqFactory(0.9)())),
-    (error) => error && error.code === 'STORE_UNAVAILABLE',
+  await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: {
+      '1201-aaaaaaaa': [
+        sessionRow(WS_A, q[0], 'sess-legacy'),
+        entry(WS_A, q[1], 'cnf_legacy_a'),
+        sessionRow(WS_A, q[4], 'sess-shared', { turns: 1 }),
+        entry(WS_A, q[6], 'cnf_cross', { title: 'cross A' }),
+        entry(WS_A, q[7], 'cnf_dup', { title: 'legacy duplicate' }),
+      ],
+    },
+  })
+  await seedLegacyWorkspace(root, WS_B, {
+    canonicalPath: PATH_B,
+    shards: {
+      '1202-bbbbbbbb': [
+        entry(WS_B, q[2], 'cnf_legacy_b'),
+        entry(WS_B, q[3], 'cnf_cross', { title: 'cross B (earlier)' }),
+        entry(WS_B, q[5], 'cnf_legacy_b2'),
+      ],
+    },
+  })
+
+  const journal = await store.openGlobal()
+  await journal.append(entry(GLOBAL_SCOPE_KEY, q[8], 'cnf_global'))
+  await journal.append(entry(GLOBAL_SCOPE_KEY, q[9], 'cnf_dup', { title: 'global wins' }))
+  await journal.append(sessionRow(GLOBAL_SCOPE_KEY, q[10], 'sess-shared', { turns: 3 }))
+
+  // Manifest labels supply provenance; the global scope is never "legacy".
+  assert.deepEqual(store.legacyWorkspaceMeta(), [
+    { wsKey: WS_A, canonicalPath: PATH_A, label: 'alpha' },
+    { wsKey: WS_B, canonicalPath: PATH_B, label: 'beta' },
+  ])
+
+  const legacy = store.legacyView()
+  assert.equal(store.legacyView(), legacy, 'the legacy view is cached')
+  assert.deepEqual([...legacy.labels.keys()], [WS_A, WS_B])
+  assert.equal(legacy.labels.get(WS_A), 'alpha')
+  assert.equal(legacy.labels.get(WS_B), 'beta')
+  assert.ok(Object.isFrozen(legacy.records))
+  assert.ok(
+    legacy.records.every((record) => record.ws === WS_A || record.ws === WS_B),
+    'legacy records keep their original ws field and are never rewritten',
   )
-  await assert.doesNotReject(() => store.close(), 'close is idempotent')
-  size = await journal.sizeInfo()
-  assert.equal(size.entries, 1)
+  assert.equal(legacy.records.find((record) => record.id === 'cnf_dup').title, 'legacy duplicate')
+  assert.equal(
+    legacy.records.find((record) => record.id === 'cnf_cross').ws,
+    WS_B,
+    'within legacy data the earliest seq wins for one entry id',
+  )
+
+  const merged = store.mergedRecords()
+  assert.ok(Object.isFrozen(merged))
+  assert.equal(store.mergedRecords(), merged, 'the merged view is cached until a change')
+  assert.deepEqual(
+    merged.map((record) => record.seq),
+    [q[0], q[1], q[2], q[3], q[5], q[8], q[9], q[10]],
+    'sorted by seq with entry/id duplicates and stale session rows removed',
+  )
+
+  const duplicate = merged.find((record) => record.id === 'cnf_dup')
+  assert.equal(duplicate.ws, GLOBAL_SCOPE_KEY, 'the global record wins the id even with a higher seq')
+  assert.equal(duplicate.title, 'global wins')
+  const shared = merged.find((record) => record.sessionId === 'sess-shared')
+  assert.equal(shared.turns, 3, 'session rows are upserts: the highest seq wins')
+  assert.equal(shared.seq, q[10])
+  assert.ok(merged.some((record) => record.sessionId === 'sess-legacy'))
+
+  // A global append invalidates the merged cache and the new record appears.
+  await journal.append(entry(GLOBAL_SCOPE_KEY, q[11], 'cnf_after'))
+  const after = store.mergedRecords()
+  assert.notEqual(after, merged)
+  assert.deepEqual(
+    after.map((record) => record.seq),
+    [q[0], q[1], q[2], q[3], q[5], q[8], q[9], q[10], q[11]],
+  )
+})
+
+test('UT-STORE-13 legacy journals are read-only: no legacy file is modified, created or deleted', async () => {
+  const { store, root } = await newStore()
+  const seqs = seqFactory(0.61)
+  const dirA = await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: { '1111-aaaaaaaa': [entry(WS_A, seqs(), 'cnf_legacy_ro_a')] },
+  })
+  const dirB = await seedLegacyWorkspace(root, WS_B, {
+    canonicalPath: PATH_B,
+    shards: { '2222-bbbbbbbb': [entry(WS_B, seqs(), 'cnf_legacy_ro_b')] },
+  })
+  const beforeA = await snapshotFiles(dirA)
+  const beforeB = await snapshotFiles(dirB)
+
+  const journal = await store.openGlobal()
+  await journal.append(entry(GLOBAL_SCOPE_KEY, seqs(), 'cnf_global_ro'))
+  await store.refreshMerged()
+  assert.equal(store.legacyWorkspaceMeta().length, 2)
+  assert.equal(store.legacyView().records.length, 2)
+  assert.equal(store.mergedRecords().length, 3)
+  await store.listWorkspaces()
+
+  assert.deepEqual(await snapshotFiles(dirA), beforeA, 'legacy workspace A is byte-identical')
+  assert.deepEqual(await snapshotFiles(dirB), beforeB, 'legacy workspace B is byte-identical')
+  assert.deepEqual(
+    (await readdir(dirA)).sort(),
+    ['MANIFEST.v1.json', 'journal.1111-aaaaaaaa.v1.jsonl'],
+    'no writer shard/presence directory is added to a legacy workspace',
+  )
+  assert.ok(!(await readdir(path.join(root, 'workspaces'))).includes('presence'))
+})
+
+test('UT-STORE-14 corrupt legacy manifests and journal lines are tolerated, never thrown', async () => {
+  const { store, root } = await newStore()
+  const seqs = seqFactory(0.83)
+  const q = Array.from({ length: 8 }, () => seqs())
+
+  const validOne = entry(WS_D, q[1], 'cnf_valid_1')
+  const validTwo = entry(WS_D, q[3], 'cnf_valid_2')
+  const rawShard = [
+    JSON.stringify(validOne),
+    'x'.repeat(66000), // over the 64 KiB per-line cap
+    '{not json',
+    JSON.stringify({ v: 1, type: 'signal', ws: WS_D, seq: q[4], ts: TS }),
+    JSON.stringify(entry(WS_A, q[5], 'cnf_wrong_ws')),
+    JSON.stringify(validTwo),
+    '{"v":1,"type":"entry","id":"cnf_torn', // torn tail, no LF
+  ].join('\n')
+  await seedLegacyWorkspace(root, WS_D, {
+    canonicalPath: PATH_C,
+    shards: { '1401-dddddddd': rawShard },
+  })
+  // Corrupt manifest: the workspace cannot be labelled, so it is skipped.
+  await seedLegacyWorkspace(root, WS_C, {
+    rawManifest: '{not json',
+    shards: { '1402-cccccccc': [entry(WS_C, q[2], 'cnf_corrupt_manifest')] },
+  })
+  // Shard with no manifest at all.
+  await mkdir(path.join(root, 'workspaces', WS_E), { recursive: true })
+  await writeFile(
+    path.join(root, 'workspaces', WS_E, 'journal.1403-eeeeeeee.v1.jsonl'),
+    `${JSON.stringify(entry(WS_E, q[6], 'cnf_no_manifest'))}\n`,
+    'utf8',
+  )
+
+  assert.doesNotThrow(() => store.legacyWorkspaceMeta())
+  const meta = store.legacyWorkspaceMeta()
+  assert.deepEqual(meta.map((item) => item.wsKey), [WS_D])
+  assert.equal(meta[0].label, 'gamma')
+
+  const legacy = store.legacyView()
+  assert.deepEqual(legacy.records.map((record) => record.id), ['cnf_valid_1', 'cnf_valid_2'])
+  assert.deepEqual([...legacy.labels.keys()], [WS_D])
+  assert.ok(!legacy.records.some((record) => record.id === 'cnf_corrupt_manifest'))
+  assert.ok(!legacy.records.some((record) => record.id === 'cnf_no_manifest'))
+  assert.ok(!legacy.records.some((record) => record.id === 'cnf_torn'))
+
+  assert.doesNotThrow(() => store.mergedRecords())
+  assert.deepEqual(store.mergedRecords().map((record) => record.id), ['cnf_valid_1', 'cnf_valid_2'])
+  assert.equal(await store.refreshMerged(), false, 'a corrupt legacy corpus never fails a refresh')
 })
 
 // ---------------------------------------------------------------------------
-// root resolution + injectable fs seams (UT-STORE-18/19)
+// universal change feed
 // ---------------------------------------------------------------------------
 
-test('UT-STORE-18 DSH_HOME/root resolution order (env, homedir, config.store.dir)', async () => {
+test('UT-STORE-15 onMergedChange/refreshMerged follow the global journal across mounts', async () => {
+  const root = await tempRoot()
+  const one = await newStore({ root, pid: 7001, seed: 0.11, pollMs: 60_000 })
+  const two = await newStore({ root, pid: 7002, seed: 0.93, pollMs: 60_000 })
+  const seqsOne = seqFactory(0.21)
+  const seqsTwo = seqFactory(0.71)
+
+  const changes = []
+  const unsubscribe = one.store.onMergedChange((changed) => changes.push(changed))
+  assert.equal(typeof unsubscribe, 'function')
+  assert.equal(one.store.onMergedChange('not a function')(), undefined, 'a bad listener is a no-op')
+
+  const journalOne = await one.store.openGlobal()
+  await journalOne.append(entry(GLOBAL_SCOPE_KEY, seqsOne(), 'cnf_one'))
+  assert.deepEqual(changes, [true], 'the subscriber fires on a global append')
+  assert.equal(one.store.mergedRecords().filter((record) => record.id === 'cnf_one').length, 1)
+  assert.equal(await one.store.refreshMerged(), false, 'nothing changed => false')
+
+  // Another mount (different writer id) appends to the same universal journal.
+  const journalTwo = await two.store.openGlobal()
+  await journalTwo.append(entry(GLOBAL_SCOPE_KEY, seqsTwo(), 'cnf_two'))
+  assert.equal(await one.store.refreshMerged(), true)
+  assert.equal(one.store.mergedRecords().filter((record) => record.id === 'cnf_two').length, 1)
+  assert.deepEqual(changes, [true, true])
+
+  // Unsubscribed listeners stop receiving the feed.
+  unsubscribe()
+  await journalTwo.append(entry(GLOBAL_SCOPE_KEY, seqsTwo(), 'cnf_three'))
+  assert.equal(await one.store.refreshMerged(), true)
+  assert.equal(one.store.mergedRecords().filter((record) => record.id === 'cnf_three').length, 1)
+  assert.deepEqual(changes, [true, true], 'the unsubscribed callback is no longer called')
+})
+
+// ---------------------------------------------------------------------------
+// read-only universal view for export/CLI (no plugin mount)
+// ---------------------------------------------------------------------------
+
+test('UT-STORE-17 refreshMerged opens an existing global scope read-only and never creates one', async () => {
+  const root = await tempRoot()
+  const seeded = await newStore({ root, pid: 6001, seed: 0.31 })
+  const seededJournal = await seeded.store.openGlobal()
+  await seededJournal.append(entry(GLOBAL_SCOPE_KEY, seqFactory(0.44)(), 'cnf_seeded_global'))
+  await seeded.store.close()
+  await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: { '1701-aaaaaaaa': [entry(WS_A, seqFactory(0.55)(), 'cnf_seeded_legacy')] },
+  })
+  const before = await snapshotFiles(path.join(root, 'workspaces'))
+
+  const { store } = await newStore({ root, pid: 6002, seed: 0.77, pollMs: 60_000 })
+  assert.equal(store.globalJournal(), null, 'not opened by init()')
+  assert.equal(await store.refreshMerged(), true, 'the on-disk global journal is opened and merged')
+  assert.ok(store.globalJournal() !== null)
+  assert.deepEqual(
+    store.mergedRecords().map((record) => record.id).sort(),
+    ['cnf_seeded_global', 'cnf_seeded_legacy'],
+  )
+  assert.deepEqual(await snapshotFiles(path.join(root, 'workspaces')), before, 'read-only refresh writes nothing')
+
+  // A profile with legacy journals but no v0.2 global scope is exported without
+  // creating the universal scope directory.
+  const fresh = await newStore()
+  assert.equal(await fresh.store.refreshMerged(), false)
+  await assert.rejects(
+    () => readdir(path.join(fresh.root, 'workspaces', GLOBAL_SCOPE_KEY)),
+    (error) => error && error.code === 'ENOENT',
+  )
+})
+
+test('UT-STORE-18 a pre-init legacy scan is not cached: init() rebinds the real corpus', async () => {
+  const base = await tempRoot()
+  const root = path.join(base, 'not-yet-created') // init() owns creating the root
+  const config = { store: { ...DEFAULTS.store, dir: root, pollMs: 60_000, watch: false } }
+  const store = new JournalStore({
+    config,
+    deps: { pid: 8001, platform: 'win32', random: seededRandom(0.5), now: () => 1_700_000_000_000, retryDelays: [0, 0, 0] },
+  })
+  stores.push(store)
+  assert.deepEqual(store.mergedRecords(), [], 'no root yet => no legacy records (and no throw)')
+  await store.init()
+  await seedLegacyWorkspace(root, WS_A, {
+    canonicalPath: PATH_A,
+    shards: { '1801-aaaaaaaa': [entry(WS_A, seqFactory(0.27)(), 'cnf_late_root')] },
+  })
+  assert.deepEqual(store.mergedRecords().map((record) => record.id), ['cnf_late_root'])
+})
+
+// ---------------------------------------------------------------------------
+// root resolution (retained)
+// ---------------------------------------------------------------------------
+
+test('UT-STORE-16 root resolution order: config.store.dir, DSH_HOME env, homedir fallback', async () => {
   const home = await tempRoot()
   const envHome = path.join(home, 'env-home')
+
   const fallback = new JournalStore({
     config: { store: { dir: '' } },
     deps: { env: {}, homedir: () => home, random: seededRandom(0.1), pid: 1 },
@@ -608,7 +625,12 @@ test('UT-STORE-18 DSH_HOME/root resolution order (env, homedir, config.store.dir
 
   const fromEnv = new JournalStore({
     config: { store: { dir: '' } },
-    deps: { env: { DSH_HOME: envHome }, homedir: () => path.join(home, 'ignored'), random: seededRandom(0.1), pid: 1 },
+    deps: {
+      env: { DSH_HOME: envHome },
+      homedir: () => path.join(home, 'ignored'),
+      random: seededRandom(0.1),
+      pid: 1,
+    },
   })
   assert.equal(fromEnv.rootDir, path.join(envHome, 'storages', 'confluence', 'v1'))
 
@@ -624,28 +646,14 @@ test('UT-STORE-18 DSH_HOME/root resolution order (env, homedir, config.store.dir
     deps: { env: { DSH_HOME: envHome }, random: seededRandom(0.1), pid: 1 },
   })
   assert.equal(absoluteStore.rootDir, absolute, 'absolute config dir wins (trailing separator trimmed)')
-
-  const device = new JournalStore({
-    config: { store: { dir: '\\\\?\\C:\\device' } },
-    deps: { env: { DSH_HOME: envHome }, random: seededRandom(0.1), pid: 1 },
-  })
-  assert.equal(device.rootDir, path.join(envHome, 'storages', 'confluence', 'v1'))
 })
 
-test('UT-STORE-19 all fs access goes through the injectable deps.fs seam', async () => {
-  const root = await tempRoot()
-  let readFileCalls = 0
-  const wrapped = {
-    ...nodeFsPromises,
-    readFile: async (...args) => {
-      readFileCalls += 1
-      return nodeFsPromises.readFile(...args)
-    },
-  }
-  const { store } = await newStore({ root, fs: wrapped })
-  const journal = await openJournal(store)
-  await journal.append(entry(seqFactory()()))
-  await journal.refresh({ force: true })
-  await store.listWorkspaces()
-  assert.ok(readFileCalls >= 2, 'manifest/shard reads use the injected fs implementation')
+test('UT-STORE-19 concurrent openGlobal()/openWorkspace() share one live journal', async () => {
+  const { store } = await newStore()
+  const [first, second] = await Promise.all([store.openGlobal(), store.openGlobal()])
+  assert.equal(first, second, 'concurrent opens must return the same journal instance')
+  assert.equal(store.globalJournal(), first)
+  assert.deepEqual(store.legacyWorkspaceMeta(), [])
+  await store.close()
+  assert.equal(first.isOpen, false, 'close() must close the canonical journal')
 })

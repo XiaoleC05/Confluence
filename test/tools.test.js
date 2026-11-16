@@ -1,8 +1,9 @@
-// WP5 — Confluence model-facing tools: contract, rendering, errors, workspace authority.
+// WP5 — Confluence model-facing tools: contract, rendering, errors, universal memory scope.
 //
 // Hermetic: a fake facade in this file, no DSH runtime, no filesystem, no network. The facade
-// shape follows the Lead's build-round contract (index.js provides it); the tests also pin the
-// exact tool-api.md render shapes and the `through=<ULID>` watermark marker.
+// shape follows the v0.2.0 contract (index.js provides it; ADR-0007): memory is universal, so
+// `facade.workspaceFor()` always resolves to `{ key:'global', label:'All sessions' }`. The tests
+// also pin the exact tool-api.md render shapes and the `through=<ULID>` watermark marker.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -101,7 +102,7 @@ function defaultRecallResult() {
 function makeFacade(overrides = {}) {
   const calls = [];
   const defaults = {
-    workspaceFor: () => ({ key: 'ws_1', label: 'solo-bench', canonicalPath: 'D:\\ws' }),
+    workspaceFor: () => ({ key: 'global', label: 'All sessions' }),
     boardView: () => defaultBoardView(),
     post: (_agent, input) => ({ id: 'cnf_post1', seq: '01POSTSEQ', kind: input.kind, status: 'published' }),
     readEntry: (_agent, ref) => defaultReadEntry(ref),
@@ -225,7 +226,7 @@ test('UT-TOOL-04 board renders unread notes, open items, peers and the through m
   const value = await run(byName, 'confluence_board', { limit: 2 });
   assert.deepEqual(calls[0], { name: 'workspaceFor', args: [AGENT] });
   assert.deepEqual(calls[1], { name: 'boardView', args: [AGENT] });
-  assert.equal(value.workspace, 'solo-bench');
+  assert.equal(value.workspace, 'All sessions');
   assert.equal(value.unread, 2);
   assert.equal(value.notes_total, 12);
   assert.equal(value.peers, 2);
@@ -239,7 +240,7 @@ test('UT-TOOL-04 board renders unread notes, open items, peers and the through m
   const text = rendered(byName.get('confluence_board'), { limit: 2 }, value);
   assert.match(text, /^<confluence-result trust="untrusted">/);
   assert.match(text, /Untrusted data written by other sessions/);
-  assert.match(text, /<confluence-board name="solo-bench" unread="2" notes="12" open="1 question, 1 handoff" peers="2">/);
+  assert.match(text, /<confluence-board name="All sessions" unread="2" notes="12" open="1 question, 1 handoff" peers="2">/);
   assert.match(text, /\[cnf_m2\] gotcha "Windows rename retries wrap in EPERM" by "Auth work"/);
   assert.match(text, /Open: \[cnf_q1\] question "Which index rebuild strategy\?" by "Schema migration"/);
   assert.match(text, /Here now: "schema-migration", "auth-api"/);
@@ -270,15 +271,25 @@ test('UT-TOOL-05 board limit, include_resolved and empty-board shapes', async ()
   });
   const emptyValue = await run(empty.byName, 'confluence_board', {});
   const emptyText = rendered(empty.byName.get('confluence_board'), {}, emptyValue);
-  assert.equal(emptyText, "This workspace's shared board is empty. Publish with confluence_post.\nthrough=");
+  assert.equal(emptyText, 'Shared memory across sessions is empty. Publish with confluence_post.\nthrough=');
 });
 
-test('UT-TOOL-06 board argument validation and workspace errors', async () => {
+test('UT-TOOL-06 board argument validation and universal-scope degradation', async () => {
   const { byName } = setup();
   await rejectsWith(run(byName, 'confluence_board', { limit: 0 }), 'INVALID_ARGUMENT');
   await rejectsWith(run(byName, 'confluence_board', { limit: 11 }), 'INVALID_ARGUMENT');
   await rejectsWith(run(byName, 'confluence_board', { limit: 2.5 }), 'INVALID_ARGUMENT');
   await rejectsWith(run(byName, 'confluence_board', { include_resolved: 'yes' }), 'INVALID_ARGUMENT');
+
+  // Scope wording is display-only: a null/failed/absent resolver never blocks shared memory.
+  const nullScope = setup({ workspaceFor: () => null });
+  assert.equal((await run(nullScope.byName, 'confluence_board', {})).workspace, 'All sessions');
+  const throwingScope = setup({
+    workspaceFor: () => {
+      throw new Error('scope resolver is unavailable');
+    },
+  });
+  assert.equal((await run(throwingScope.byName, 'confluence_board', {})).workspace, 'All sessions');
 });
 
 // ---------------------------------------------------------------------------
@@ -310,7 +321,7 @@ test('UT-TOOL-07 post publishes with mapping/redaction markers and duplicate han
     supersedes: 'cnf_m1',
   });
   const text = rendered(byName.get('confluence_post'), {}, value);
-  assert.match(text, /^Published cnf_post1 \[gotcha\] on the workspace board \(seq 01POSTSEQ\)\./m);
+  assert.match(text, /^Published cnf_post1 \[gotcha\] in shared memory \(seq 01POSTSEQ\)\./m);
   assert.match(text, /Other sessions see it in their next pulse; replies use confluence_reply\./);
 
   const duplicate = setup({ post: () => ({ id: 'cnf_dup', seq: '01DUP', kind: 'decision', status: 'duplicate' }) });
@@ -344,7 +355,7 @@ test('UT-TOOL-09 read board entry renders thread and advances through', async ()
   assert.equal(value.through, '01R1');
   assert.equal(value.replies.length, 1);
   const text = rendered(byName.get('confluence_read'), { ref: 'cnf_m1' }, value);
-  assert.match(text, /<confluence-board name="solo-bench">/);
+  assert.match(text, /<confluence-board name="All sessions">/);
   assert.match(text, /\[cnf_m1\] decision "Pin deps to 0\.2\.x" by "Data migration"/);
   assert.match(text, /Body: Pin all @deepseek-ai\/\* packages/);
   assert.match(text, /Replies \(1\):/);
@@ -481,7 +492,7 @@ test('UT-TOOL-17 recall partial/timeout/empty/config-disabled paths', async () =
 
   const empty = setup({ recall: () => ({ hits: [], truncated: false, sessionsSearched: 0, eligibleSessions: 1 }) });
   const emptyValue = await run(empty.byName, 'confluence_recall', { query: 'nothing' });
-  assert.equal(rendered(empty.byName.get('confluence_recall'), { query: 'nothing' }, emptyValue), 'No literal matches in earlier sessions of this workspace.');
+  assert.equal(rendered(empty.byName.get('confluence_recall'), { query: 'nothing' }, emptyValue), 'No literal matches in earlier sessions on this machine.');
 
   const disabled = setup({}, { store: { maxBodyBytes: 8192 }, recall: { enabled: false } });
   await rejectsWith(run(disabled.byName, 'confluence_recall', { query: 'x y' }), 'RECALL_UNAVAILABLE');
@@ -495,15 +506,10 @@ test('UT-TOOL-18 recall argument validation', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Workspace authority, error mapping and registration (ADR §7 / tool-api §1.2)
+// Universal memory scope, error mapping and registration (ADR-0007 §2.4 / tool-api §1.2)
 // ---------------------------------------------------------------------------
 
-test('UT-TOOL-19 every tool requires a workspace from exec.agent, never from arguments', async () => {
-  const noWorkspace = setup({
-    workspaceFor: () => {
-      throw codedError('NO_WORKSPACE', 'this session has no resolvable project directory; the workspace board is unavailable.');
-    },
-  });
+test('UT-TOOL-19 shared memory is universal: no NO_WORKSPACE path and no argument-supplied scope', async () => {
   const calls = [
     ['confluence_board', {}],
     ['confluence_post', { kind: 'decision', title: 'x' }],
@@ -512,15 +518,60 @@ test('UT-TOOL-19 every tool requires a workspace from exec.agent, never from arg
     ['confluence_reply', { id: 'cnf_q1', body: 'x' }],
     ['confluence_recall', { query: 'x y' }],
   ];
-  for (const [name, args] of calls) {
-    await rejectsWith(run(noWorkspace.byName, name, args), 'NO_WORKSPACE');
-  }
-  // No facade write may happen without a workspace.
-  assert.equal(noWorkspace.calls.filter((call) => ['post', 'reply'].includes(call.name)).length, 0);
 
-  const nullWorkspace = setup({ workspaceFor: () => null });
-  await rejectsWith(run(nullWorkspace.byName, 'confluence_board', {}), 'NO_WORKSPACE');
-  await rejectsWith(run(noWorkspace.byName, 'confluence_board', {}, { agent: undefined }), 'NO_WORKSPACE');
+  // The facade alias always resolves the global scope, so every tool works with no workspace.
+  const globalScope = setup({ workspaceFor: () => ({ key: 'global', label: 'All sessions' }) });
+  for (const [name, args] of calls) {
+    const value = await run(globalScope.byName, name, args);
+    assert.ok(value && typeof value === 'object', `${name} must succeed without a workspace`);
+  }
+  // Scope/user identity comes from exec.agent only; no tool accepts a workspace/session argument.
+  for (const definition of globalScope.definitions) {
+    const fields = Object.keys(definition.parameters.properties);
+    assert.equal(fields.includes('workspace'), false, `${definition.name} must not accept a workspace argument`);
+    assert.equal(fields.includes('scope'), false, `${definition.name} must not accept a scope argument`);
+    assert.equal(fields.includes('session_id'), false, `${definition.name} must not accept a session argument`);
+  }
+  const scopedCalls = globalScope.calls.filter((call) => call.name === 'workspaceFor');
+  assert.ok(scopedCalls.length > 0, 'the board/read paths ask the facade for the display label');
+  for (const call of scopedCalls) assert.deepEqual(call.args, [AGENT]);
+
+  // A facade without the retained alias still serves memory (label degrades to "All sessions").
+  const { facade } = makeFacade();
+  delete facade.workspaceFor;
+  const aliasFree = createTools(facade, CONFIG);
+  const aliasFreeByName = new Map(aliasFree.map((definition) => [definition.name, definition]));
+  assert.equal((await run(aliasFreeByName, 'confluence_board', {})).workspace, 'All sessions');
+  for (const [name, args] of calls.filter(([name]) => name !== 'confluence_board')) {
+    const value = await run(aliasFreeByName, name, args);
+    assert.ok(value && typeof value === 'object', `${name} must not depend on workspaceFor()`);
+  }
+
+  // Without a session identity there is no caller to attribute memory to: UNAVAILABLE, never
+  // NO_WORKSPACE (universal memory has no workspace requirement to satisfy).
+  const { byName } = setup();
+  for (const [name, args] of calls) {
+    await rejectsWith(run(byName, name, args, { agent: null }), 'UNAVAILABLE');
+  }
+});
+
+test('UT-TOOL-21 tool wording is universal (no workspace-scoped memory language)', () => {
+  const { definitions } = setup();
+  const byName = new Map(definitions.map((definition) => [definition.name, definition]));
+  for (const definition of definitions) {
+    const surface = JSON.stringify({
+      name: definition.name,
+      description: definition.description,
+      parameters: definition.parameters,
+      output: definition.output.schema,
+    });
+    assert.doesNotMatch(surface, /this workspace|workspace's shared board|workspace-relative|workspace board/i);
+    assert.doesNotMatch(surface, /NO_WORKSPACE/);
+  }
+  assert.match(byName.get('confluence_board').description, /shared memory across sessions/i);
+  assert.match(byName.get('confluence_post').description, /shared memory across sessions/i);
+  assert.match(byName.get('confluence_search').description, /shared memory across sessions/i);
+  assert.match(byName.get('confluence_recall').description, /all earlier sessions on this machine/i);
 });
 
 test('UT-TOOL-20 unknown facade failures become STORE_UNAVAILABLE with a short cause', async () => {

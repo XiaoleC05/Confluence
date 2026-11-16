@@ -7,23 +7,34 @@
   (consent decision), `../adr/0005-ui-transport.md` (channel controls), `../adr/0002-store-format-and-concurrency.md`
   (durability/merge), `../adr/0003-pulse-and-watermarks.md` (what reaches model context).
 
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md)).** The
+> sharing boundary moves from the **workspace** to the **DSH profile/machine**. Within one profile,
+> shared memory is readable by every session by design; `privacy.privateSessions` is the only session
+> opt-out and `privacy.disabledWorkspaces` is gone. Workspace data (canonical path, key) is provenance,
+> not a confidentiality boundary, and is never rendered as a raw path — only a basename label. The
+> threat "cross-workspace leakage" becomes "cross-profile leakage / provenance leakage"; R17
+> (workspace rename merge) is obsolete. Redaction, untrusted framing, caps, opt-outs, no-egress and
+> export gates are unchanged. The v0.1.0 assets/boundaries/controls below remain as the historical
+> record; read "workspace boundary" as "profile boundary" where the control still applies.
+
 ## 1. Assets and trust boundaries
 
 | Asset | Where it lives | Sensitivity |
 |---|---|---|
-| Board entries (title, body, tags, file hints, author session title) | `$DSH_HOME/storages/confluence/v1/workspaces/<wsKey>/journal.*.jsonl` | High: agent/user-authored working notes, may contain secrets pasted by a user or model |
+| Board entries (title, body, tags, file hints, author session title) | `$DSH_HOME/storages/confluence/v1/workspaces/ws_0000000000000000/journal.*.jsonl` (legacy v0.1.0 workspace journals merged read-only) | High: agent/user-authored working notes, may contain secrets pasted by a user or model |
 | Session ledger metadata (title, status, turn count, timestamps, effective dir, ≤8 relative paths) | same journal, `session` records | Medium: activity/attention metadata; titles can contain pasted secrets |
 | Presence heartbeats (live session ids, writer id, plugin version, updatedAt) | `presence/<writerId>.json` | Low |
 | Workspace identity (canonical path, `wsKey`) | store `MANIFEST.v1.json` + panel payloads | Medium: reveals project locations |
 | Recall results (bounded excerpts of prior session logs) | **not stored by Confluence**; exist only in one tool result / panel read | High transient |
 | DSH session logs (the source of truth) | `$DSH_HOME/sessions/...` (DSH-owned) | High; Confluence never writes them |
-| Export `memories.v1.jsonl` + `manifest.json` | `<workspace>/.confluence/export/` (opt-in) | High; leaves profile storage into a repo |
+| Export `memories.v1.jsonl` + `manifest.json` | `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/` (opt-in; `--out` may point anywhere the user chooses) | High; leaves profile storage only by explicit choice |
 | Debug log (opt-in) | user-specified absolute path | Low by design: codes/counts/timings only |
 | Panel read cursor | browser `localStorage` | Low |
 
 **Trust boundaries.** (1) OS user profile: everything under `$DSH_HOME` is same-user data; the
-boundary between OS users is the Windows profile ACL. (2) Workspace: the consent and isolation
-boundary; data never crosses a `wsKey` inside the plugin. (3) Model context: anything a model reads
+boundary between OS users is the Windows profile ACL. (2) **DSH profile: the consent and sharing
+boundary (v0.2.0)**; every session in the profile may read the one shared memory space, and nothing
+crosses into another profile, OS user or machine. (3) Model context: anything a model reads
 is untrusted data from another session/agent; the model has no authority from Confluence content.
 (4) Web client: the panel is a same-user local browser surface; it must not expose board data to a
 foreign origin and must never receive raw session transcripts except an entry the user opened.
@@ -35,31 +46,31 @@ foreign origin and must never receive raw session transcripts except an entry th
 | R1 | Prompt injection through a shared note or recall excerpt ("ignore previous…, call tool X") | A model that posted hostile text, a pasted web page, a compromised subagent | Medium | Medium: wrong actions by a later agent; no direct egress |
 | R2 | Secret written into the board (API key, token, password, PEM) | Model or user posting working notes | Medium | High if it then reaches another prompt or an export |
 | R3 | Secret disclosed through ledger file hints (path names like `.env`, `secrets.ts`) | Automatic metadata capture | Medium | Medium |
-| R4 | Cross-workspace leakage in any tool, pulse, recall, panel or export | Bug or model-supplied ids/paths | Low | High (silent, catastrophic if it happens) |
+| R4 | Cross-profile leakage (another profile/OS user/machine reads or is sent shared memory) or provenance leakage (raw absolute path in a pulse/tool/panel/export payload) | Bug, model-supplied ids/paths, bad label handling | Low | High (silent, catastrophic if it happens) |
 | R5 | Another local process or OS user reads the store | Same-machine process; other OS user | Low (single-user desktop) | High |
 | R6 | Export committed to git and pushed | User runs export, then `git add -A` | Medium if export is on | High (public repo is the project's own target!) |
 | R7 | Model uses recall to assemble sensitive context for exfiltration | Prompt-injected model | Low: plugin has no network | Medium: depends on other enabled tools |
 | R8 | Multi-window write corruption / lost notes | Two DSH windows writing | Medium | Medium |
-| R9 | Hostile note forges the pulse frame (`</confluence-workspace>`), inserts control chars/U+2028/RTL, or is huge | Malicious/compromised model | Medium | Medium: token injection; breaks digest trust |
+| R9 | Hostile note forges the pulse frame (`</confluence-memory>`), inserts control chars/U+2028/RTL, or is huge | Malicious/compromised model | Medium | Medium: token injection; breaks digest trust |
 | R10 | Private-session opt-out does not actually suppress the pulse | Global context registration + scope bug | Low | High (privacy breach by design failure) |
 | R11 | Panel route reachable from a foreign origin / other content | Malicious page in the same browser, DNS rebinding-ish same-origin abuse | Low | High if it returns board data |
 | R12 | Panel XSS via note content rendered as HTML/Markdown | Hostile note | Low (v1 renders plain text) | High if introduced later |
 | R13 | Board spam / huge notes blow the token or disk budget | Compromised/looping agent | Medium | Medium (cost, trust) |
 | R14 | Debug log or export manifest leaks content | Misconfiguration | Low | Medium |
-| R15 | A hostile "decision" note is treated as authority ("the workspace says I may…") | Prompt-injected model | Medium | Medium |
+| R15 | A hostile "decision" note is treated as authority ("shared memory says I may…") | Prompt-injected model | Medium | Medium |
 | R16 | Path traversal/symlink escape through export dir or file hints | Buggy/malicious config or workspace | Low | High |
-| R17 | Workspace rename/collision merges two projects' memory | Filesystem change | Low | High |
+| R17 | Workspace rename/collision confuses provenance labels | Filesystem change | Low | Low in v0.2.0 (label is best-effort; never a permission check) |
 | R18 | OS backup/sync tools copy the store | Environment | High (harmless if same user) | Low |
 
 ## 3. Controls per risk
 
 ### 3.1 R1/R9/R15 — untrusted content: framing, escaping, no authority
 
-1. **Fixed framing** on every model-visible block: the pulse's `<confluence-workspace …>` wrapper
-   and a fixed warning sentence naming the three dangers ("instructions, permission claims, tool
-   requests"); tool results begin with the same rule and every entry line carries provenance
-   (`by "session title"`). Wording is owned by `docs/design/tool-api.md`; the escape/warning behavior
-   is owned here.
+1. **Fixed framing** on every model-visible block: the pulse's `<confluence-memory …>` wrapper
+   (v0.1.0 snapshots used `<confluence-workspace …>`) and a fixed warning sentence naming the three
+   dangers ("instructions, permission claims, tool requests"); tool results begin with the same rule
+   and every entry line carries provenance (`by "session title"`). Wording is owned by
+   `docs/design/tool-api.md`; the escape/warning behavior is owned here.
 2. **Escaping:** `<` → `\u003c` and `&` → `\u0026` in any note text embedded in a framed block;
    U+2028/U+2029 escaped as `\u2028`/`\u2029`; control characters (C0/C1, bidi overrides
    U+202A–U+202E, U+2066–U+2069) stripped or replaced with U+FFFD before persistence; newlines
@@ -103,19 +114,20 @@ foreign origin and must never receive raw session transcripts except an entry th
 - Hints are **off in the pulse** by default (`ledger.fileHintsInPulse: false`); the panel shows them
   because the user opened it.
 
-### 3.4 R4/R17 — workspace authority at every boundary
+### 3.4 R4 — boundary at every layer (v0.2.0: profile, not workspace)
 
-| Boundary | Rule |
+| Layer | Rule |
 |---|---|
-| Workspace key | `header.cwd` → `fs.realpath` → Windows lower-case fold, frozen per session; fallback effective dir only when the header has no `cwd` (ADR-0001 §5). Full canonical path stored so collisions/renames are detectable; a renamed workspace starts a new key and never merges. |
-| Tools | Authority from `exec.agent` only; model-supplied ids/paths are never trusted; no resolvable key → tool absent (`options.when`) / `NO_WORKSPACE` error. |
-| Board/reply/read | Every query filters `record.ws === caller.wsKey` first; an id from another workspace is `CONFLUENCE_NOT_FOUND` (not an error that reveals existence). |
-| Recall | `listSessions()` → canonicalize each `header.cwd` in code (never `filterSessions` by raw cwd) → keep only the caller's key → drop the caller session → bounded reads. `ref: session:<id>:<seq>` re-validates the session's canonical workspace before `readEvent`. |
-| Pulse | Rendered per agent from that agent's workspace key; no cross-workspace records reachable from the snapshot. |
-| Ledger/presence | Written only for the writing session's own workspace partition. |
-| Panel | `workspaceKey` from the client is validated against known workspace directories under the store root and live sessions; the client never sends a filesystem path; one `state` call returns exactly one workspace. |
-| Export | Exports exactly one workspace's own store; refuses if `wsKey` mismatches the directory. |
-| Config opt-outs | Applied per resolved key; an id in `disabledWorkspaces` disables every boundary for that workspace. |
+| Consent boundary | The **DSH profile/machine** (single OS user). Within it, shared memory is readable by every session by design; nothing crosses a profile. OS-user isolation remains the Windows profile ACL. |
+| Scope constant | One global scope `ws_0000000000000000` / `{key:'global', label:'All sessions'}`; it can never collide with a real workspace key. A manifest with an empty `canonicalPath` is valid only for this key. |
+| Tools | Authority from `exec.agent` only; no workspace parameter exists; `privacy.privateSessions` is the only suppression. |
+| Board/reply/read | All ids live in the one global board; a missing id and a merged legacy id are the same code path (`NOT_FOUND` when absent, no existence oracle). |
+| Recall | `listSessions()` in the profile → drop the caller and private sessions → bounded reads; no directory filtering. `ref: session:<id>:<seq>` re-checks session readability. |
+| Pulse | One global digest; no workspace label rendered; peers are all live sessions. |
+| Ledger/presence | One global journal + presence files; workspace appears only as an optional `origin.workspaceLabel` basename. |
+| Panel | No workspace key is ever accepted or returned; payloads carry `scope` and per-entry `workspaceLabel` (basename) only. |
+| Export | Exports the global board; manifest `scope:"global"` + global `wsKey`; `origin` labels are basenames; absolute paths stripped. |
+| Cross-profile | Out of scope by design: another profile's `$DSH_HOME` is a different store; the plugin has no network path to it. |
 
 ### 3.5 R7/R11 — no egress and local-only
 
@@ -145,8 +157,9 @@ documented, and outside this plugin's authority.
 - Every write is resolved under the store root (`path.resolve` + prefix check after canonicalizing
   the root); no `..` segments; the root is checked to be a directory, not a file/symlink target
   escaping the profile.
-- Export is the only workspace write and is opt-in; it inherits the repository's ACL and is
-  documented as leaving the profile.
+- Export is the only profile-external write and is opt-in; `--out` may place it inside a repository,
+  where it inherits that ACL and is documented as leaving the profile. v0.2.0 creates no files inside
+  a workspace by default.
 
 ### 3.7 R10 — opt-outs and the scoped suppressor
 
@@ -158,10 +171,11 @@ documented, and outside this plugin's authority.
   (d) no recall of its log by other sessions? — other sessions may still recall its **committed
   logs** through `sessionQuery`; a private session only removes *Confluence-collected* sharing, not
   DSH's own logs. This limit is stated in the panel and README.
-- `privacy.disabledWorkspaces`: same suppression for every session resolving to that key; the board
-  is hidden in panel data and no new records are written.
+- There is **no workspace-level opt-out** in v0.2.0: `privacy.disabledWorkspaces` was removed with the
+  workspace boundary (ADR 0007 §6). A config that still sets it produces
+  `CONFIG_DEPRECATED privacy.disabledWorkspaces` and is ignored.
 - Changes are re-applied to live agents on plugin activation (`ctx.agents.list()`), and the M3 panel
-  toggles write through the config editor (`config.md` §6).
+  toggle writes through the config editor (`config.md` §6).
 - Opt-out never deletes existing records; M4 tombstone/forget is a separate explicit action.
 
 ### 3.8 Audit and transparency
@@ -175,16 +189,18 @@ documented, and outside this plugin's authority.
 ### 3.9 R6/R14/R16 — export safety
 
 - Opt-in (`export.enabled: false` default); written only by an explicit user action; never read back
-  by the plugin; deterministic order; redacted; workspace-relative file paths only; absolute/home
-  paths stripped. Files: `memories.v1.jsonl` (each line `v:1` + `schema:"confluence.memories/v1"`)
-  and `manifest.json` (`schema:"confluence.memories/v1"`, `formatVersion:1`); tombstoned entries are
+  by the plugin; deterministic order; redacted; relative file paths only; absolute/home
+  paths stripped. Files: `memories.v1.jsonl` (each line `v:1` + `schema:"confluence.memories/v1"`,
+  global `wsKey`, optional additive `origin`) and `manifest.json` (`schema:"confluence.memories/v1"`,
+  `formatVersion:1`, `scope:"global"`); tombstoned entries are
   exported as content-free `deleted:true` stubs, never the content (`store-format.md` §14 is
   authoritative).
-- `export.dir` must be workspace-relative and stay inside the workspace after `realpath`
-  (no `..`, no drive/UNC prefix, no symlink escape); the exporter writes a generated `.gitignore`
-  containing `*` and a README warning inside the export directory as defense in depth.
-- **Repository guidance:** `.confluence/` is listed in the repository root `.gitignore`; README and
-  `docs/install.md` still state that an export creates commit-able files inside the user's workspace.
+- **v0.2.0 location:** the default output is `$DSH_HOME/storages/confluence-exports/<UTC-stamp>/`
+  (inside the profile, outside the store root); `--out` may override it. The exporter refuses a target
+  inside the store root. `export.dir` is a retained v0.1.0 config field; it no longer makes the export
+  write into a workspace. No files are created inside any workspace by default.
+- **Repository guidance:** if a user points `--out` at a repository, they must gitignore it; the
+  README and `docs/install.md` state that exports leave the profile only by explicit choice.
 - `debug.logFile` is off by default; when enabled it contains codes/counts/timings/writer ids and
   config warnings only, never note bodies, recall text, prompts or tool output, and rotates at
   5 MB × 2.
@@ -212,16 +228,17 @@ sanitizer and pass the same hostile-note fixtures.
 ## 4. What is stored vs what recall reads on demand (README-ready)
 
 > **What Confluence stores (plain text, under your DSH profile):** the notes agents or you
-> deliberately post in a workspace (kind, title, body, tags, optional workspace-relative file
-> hints, author session title and time); session metadata (title, status, turn count, last activity,
-> the session's effective directory, and up to 8 workspace-relative file paths seen in tool calls);
-> live-session heartbeat files; and the workspace's canonical path. Notes are append-only; the store
+> deliberately post in shared memory (kind, title, body, tags, optional relative file
+> hints, author session title and time, and the originating workspace name as a provenance label);
+> session metadata (title, status, turn count, last activity,
+> the session's effective directory, and up to 8 relative file paths seen in tool calls);
+> live-session heartbeat files; and the global scope's manifest. Notes are append-only; the store
 > never contains prompts, assistant messages, reasoning, tool arguments, tool outputs, command
 > lines, or full transcripts.
 >
 > **What recall reads on demand:** when an agent explicitly calls `confluence_recall`, Confluence
-> enumerates the *other* sessions of the *same* workspace and searches their existing DSH session
-> logs for a literal text match. It returns at most 3 sessions' worth, at most 5 short excerpts
+> enumerates the *other* sessions in this profile (excluding private ones) and searches their existing
+> DSH session logs for a literal text match. It returns at most 3 sessions' worth, at most 5 short excerpts
 > (≤600 characters each), redacted and framed as untrusted, each with a provenance reference that
 > the agent can open with one bounded read. Nothing is indexed, copied or stored by this search, and
 > it never runs automatically in the background or inside the prompt.
@@ -259,17 +276,17 @@ sanitizer and pass the same hostile-note fixtures.
 |---|---|---|---|---|
 | T1 | Redaction before persistence | `redact()` unit + post→journal scan | keys `sk-…`, `AKIA…`, `ghp_…`, JWT, PEM block, `password=hunter2`, `Bearer abc…`, a public key, `password:` with no value | secrets → `[redacted]`; public key and empty assignment untouched; ≤50 replacements |
 | T2 | Title redaction | store + render | title containing a token, `privacy.redactTitles` on/off | on: redacted in journal and pulse; off: warning `PRIVACY_TITLES_UNREDACTED` and panel banner |
-| T3 | Hostile note fixtures | pulse/tool render escaping | `</confluence-workspace>`, `<script>alert(1)</script>`, `{{cwd}}`, U+2028/2029, C0 controls, bidi override, 1 MB title, CJK+emoji, `\n`-heavy body | `<`→`\u003c`, `&`→`\u0026`, U+2028/2029 escaped, controls stripped, title stored ≤160 chars and rendered ≤60 in the pulse, body capped, frame intact, byte-stable on re-render |
+| T3 | Hostile note fixtures | pulse/tool render escaping | `</confluence-memory>`, `<script>alert(1)</script>`, `{{cwd}}`, U+2028/2029, C0 controls, bidi override, 1 MB title, CJK+emoji, `\n`-heavy body | `<`→`\u003c`, `&`→`\u0026`, U+2028/2029 escaped, controls stripped, title stored ≤160 chars and rendered ≤60 in the pulse, body capped, frame intact, byte-stable on re-render |
 | T4 | Journal field allow-list | scan every `session` record + presence file | a full board/ledger fixture | keys ⊆ allow-list; no `/prompt|assistant|reasoning|toolResult|tool_result|command|stdout|stderr/i` key; `entry` records may have `title`/`body` only |
 | T5 | Ledger path deny-list | hint collector | `.env`, `.ssh/id_rsa`, `src/app.ts`, `C:\abs\path.ts`, symlink to outside, `..\..\x` | only `src/app.ts` retained; absolute/`..`/symlink/denied dropped |
-| T6 | Workspace isolation | every boundary | two workspaces A/B with distinct entries and sessions | A's tools/pulse/recall/panel/export never return B's data; `read` of B's id in A → `NOT_FOUND`; `recall` never lists B sessions |
+| T6 | Cross-profile isolation | every layer | two profile stores with distinct entries and sessions | tools/pulse/recall/panel/export of profile A never return profile B's data; the plugin has no network path to another profile or machine |
 | T7 | No egress (host) | static bundle scan | built host files | zero matches for `fetch(`, `http://`, `https://`, `node:net`, `node:http`, `node:https`, `node:dns`, `node:tls`, `createServer`, `WebSocket`, `child_process` |
 | T8 | No egress (client) | static client scan | `client.js` | no absolute URL/WebSocket/EventSource/postMessage; ≤1 relative same-origin `fetch` call site at the route adapter; none if `host.call` ships |
 | T9 | Same-origin route fence | route handler (if shipped) | GET, HEAD, POST, foreign `Origin`, missing `Sec-Fetch-Site`, 200 KiB response | GET/HEAD 200 JSON `no-store`; POST 405; foreign origin rejected; response ≤128 KiB |
 | T10 | Private-session opt-out | live-session fixture | agent with id in `privacy.privateSessions` | pulse renders `''` for it; no ledger row; no presence; Confluence tools hidden; scoped suppressor installed on `agent.ctx` only (other agents unaffected) |
-| T11 | Disabled workspace | config fixture + second workspace | `disabledWorkspaces: [ws_A]` | A: no tools/pulse/writes/panel data; B unaffected; existing A records retained but not served |
+| T11 | Removed workspace opt-out | config fixture | `disabledWorkspaces: [ws_A]` | activation warning `CONFIG_DEPRECATED privacy.disabledWorkspaces`; the value is ignored; sharing stays universal; `privateSessions` still suppresses its session |
 | T12 | Config validation | config loader | wrong types, out-of-range ints, bad regex, `..\` export dir, device path, unknown key | defaults applied, deterministic warnings, no throw, no store write outside root |
-| T13 | Recall bounds | recall service | 10 same-workspace sessions with hits, slow reads, cross-workspace session | ≤3 sessions, ≤5 hits, excerpts ≤600 chars, timeout partial marked, untrusted framing, caller session excluded, foreign session excluded |
+| T13 | Recall bounds | recall service | 10 sessions in the profile with hits, slow reads, one private session, one session from another profile on disk | ≤3 sessions, ≤5 hits, excerpts ≤600 chars, timeout partial marked, untrusted framing, caller excluded, private session excluded, other-profile session excluded |
 | T14 | Export safety | exporter | export disabled; enabled with tombstone + secret + absolute path in body/paths | disabled → `CONFLUENCE_EXPORT_DISABLED`; enabled → deterministic order, redacted, relative paths only, no absolute-path regex, tombstoned entries exported as content-free `deleted:true` stubs, `manifest.json` carries `schema:"confluence.memories/v1"` + `formatVersion:1` |
 | T15 | Multi-window/torn line | two simulated writers + truncated tail | incomplete last line, interleaved shards | torn line ignored and recovered next poll; both writers' records merge; no shard rewritten; dedupe/last-wins correct |
 | T16 | Board caps | posting > cap, body > cap | `maxEntriesPerWorkspace`, `maxBodyBytes` | reject with named error; no partial append; pulse/panel show counts |
@@ -298,10 +315,10 @@ file list, not just the working tree.
 - **S-SEC5** — Recall of a *private* session's log by another session: `sessionQuery` has no caller
   authorization (research F3), so Confluence's own filter is the only control. Confirm the filter is
   applied to every path (`confluence_recall` and `confluence_read` session refs) with a live
-  two-workspace fixture; if `readEvent` can be reached without the canonical-workspace check, treat
+  private-session fixture; if `readEvent` can be reached without the private-session check, treat
   as a bug and add the check.
-- **S-SEC6** — M4 release check: confirm the repository root `.gitignore` still lists `.confluence/`
-  and the export directory README warning is present (both already in place as of round 3).
+- **S-SEC6** — M4 release check: confirm the export default root stays under `$DSH_HOME`
+  (`storages/confluence-exports/`) and that `--out` never writes into the store root.
 
 ## Open questions
 
@@ -313,7 +330,7 @@ file list, not just the working tree.
    pulse? Proposed: panel-only flag in M4, never a reason to hide data (avoids a false sense of
    safety and false positives).
 3. **Private-session semantics vs DSH logs** — the panel/README state that opt-out does not modify
-   DSH logs. Confirm the wording satisfies the "workspace = consent boundary" promise or whether a
+   DSH logs. Confirm the wording satisfies the "profile = sharing boundary" promise or whether a
    stronger user-facing warning is required at first toggle.
 4. **Encryption/at-rest** — rejected in ADR-0004 for v1 (key management without a server adds
    failure modes and does not protect against same-user processes). Revisit only if the store moves

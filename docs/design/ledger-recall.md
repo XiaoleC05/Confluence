@@ -7,24 +7,36 @@
   (watermarks), `config.md`.
 - Target: DSH `0.2.2-rc.1`, profile `desktop`, Windows 11, offline. Read-only over session logs: the
   plugin never writes, edits, or deletes a session log or its files.
-- Caps: ledger 8 file hints/session, 200 sessions/workspace, title 160 chars; recall 3 sessions /
-  5 hits / 5,000 ms; excerpts ≤ 600 chars; ref window ≤ 3 events; store retention 90 days.
+- Caps: ledger 8 file hints/session, 200 sessions **per profile** (`ledger.maxSessions`), title 160
+  chars; recall 3 sessions / 5 hits / 5,000 ms; excerpts ≤ 600 chars; ref window ≤ 3 events; store
+  retention 90 days.
 
 **Evidence convention.** `dsh/...` = installed `app.asar/dsh/...`; `:N` = 1-based line in the installed
 bundled file, re-read for this document. Unverified behavior is marked `HYPOTHESIS:`.
+
+> **v0.2.0 amendment — universal memory scope ([ADR 0007](../adr/0007-universal-memory-scope.md), delta
+> §5).** The ledger and presence move into the **global** journal: one row set for the whole profile,
+> capped by `ledger.maxSessions` (the old `maxSessionsPerWorkspace` name is mapped with a
+> `CONFIG_DEPRECATED` warning), and workspace data becomes an optional
+> `origin:{workspaceKey, workspaceLabel}` (basename) we add for display. `live()` returns **all** live
+> peers with an optional `workspaceLabel`. Recall loses its workspace filter entirely: it enumerates
+> every earlier session in the profile, excludes the caller and `privacy.privateSessions`, and keeps
+> the same caps (≤3 sessions, ≤5 hits, 5 s, literal `filterEvents`). `privacy.disabledWorkspaces` no
+> longer exists. The caps line and v0.1.0 algorithm below are historical where they say
+> "per workspace"/"same workspace".
 
 ---
 
 ## 1. What the ledger is — and is not
 
-The ledger answers "which sessions were working in this workspace, when, on what, and how far did they
+The ledger answers "which sessions were working on this machine, when, on what, and how far did they
 get" without storing any conversation content. It is **metadata only, live-first** (ADR §9):
 
 | Stored | Never stored |
 |---|---|
-| session id, workspace key, redacted title (≤ 160 chars), status (`live`/`idle` at write time), `lastActivityTs` (ISO), turn count, `parentSession`, `origin` (subagent), redaction count | user prompts, assistant text, reasoning, tool output, tool call arguments other than allow-listed path fields, command lines, file contents, environment values |
-| `effectiveDir` absolute canonical directory only when it differs from the workspace path (never exported, never in the pulse) | anything read from disk during prompt assembly (the pulse never reads the ledger) |
-| ≤ 8 distinct workspace-relative paths per session, seen in write/edit-style tool calls ("files seen in tool calls (partial)") | file hints for cold sessions backfilled from logs (no cold backfill in v1) |
+| session id, `origin` provenance (`workspaceKey`/`workspaceLabel` basename), redacted title (≤ 160 chars), status (`live`/`idle` at write time), `lastActivityTs` (ISO), turn count, `parentSession`, redaction count | user prompts, assistant text, reasoning, tool output, tool call arguments other than allow-listed path fields, command lines, file contents, environment values |
+| `effectiveDir` absolute canonical directory only when it differs from the origin directory (never exported, never in the pulse) | anything read from disk during prompt assembly (the pulse never reads the ledger) |
+| ≤ 8 distinct relative paths per session, seen in write/edit-style tool calls ("files seen in tool calls (partial)") | file hints for cold sessions backfilled from logs (no cold backfill in v1) |
 
 Two consequences of DSH reality, both encoded in the wording: shell writes are invisible, and under the
 default `ptc` preset nested dispatch is logged as `tool/ptc-dispatch`, so every path hint is phrased
@@ -110,11 +122,11 @@ once from `session.header` at first observation (`dsh-internals.md` §1.1), neve
 
 ### 2.1 Which sessions are captured
 
-- Only sessions whose workspace key resolves (`session.header.cwd` canonicalized, ADR §5). A session with
-  no `cwd` writes no ledger row.
-- The key is frozen per session at first observation; a later `cd` does not change `ws`.
-- `privacy.privateSessions` / `privacy.disabledWorkspaces` (ADR §10, M2): a suppressed session emits no
+- A session is captured **whether or not** its directory resolves; a missing origin only means no
+  provenance label (universal memory, ADR 0007). The origin is resolved best-effort at first observation.
+- `privacy.privateSessions` (ADR §10, M2): a suppressed session emits no
   ledger row at all; `ctx.systemPrompt.suppressRuntimeContext()` is also scoped for it (pulse §1).
+  `privacy.disabledWorkspaces` no longer exists in v0.2.0.
 - Subagent sessions: captured like any other session when they have a header `cwd` (their events are
   real work); readers may choose to hide them in the panel (open question 5).
 
@@ -176,9 +188,10 @@ function pathHints(toolName, rawArguments, wsRoot) {
 
 ### 2.4 Caps
 
-- `ledger.maxSessionsPerWorkspace: 200`: the in-memory index keeps the 200 most recently active sessions;
-  older rows remain in the journal until `store.retentionDays: 90` and are ignored by readers, then
-  pruned by M4 compaction. Per-session data is bounded by the fixed field set and 8 paths.
+- `ledger.maxSessions: 200`: the in-memory index keeps the 200 most recently active sessions
+  **profile-wide**; older rows remain in the journal until `store.retentionDays: 90` and are ignored by
+  readers, then pruned by M4 compaction. Per-session data is bounded by the fixed field set and 8 paths.
+  (The v0.1.0 name `maxSessionsPerWorkspace` is deprecated and mapped with a warning.)
 - `ledger.maxFilesPerSession: 8`; title 160 chars; `effectiveDir` is capped defensively at 1,024 chars
   (never rendered in the pulse, never exported).
 - The ledger never grows with prompts or turns beyond the turn counter integer.
@@ -190,22 +203,25 @@ function pathHints(toolName, rawArguments, wsRoot) {
 Presence must never touch the journal (ADR §6: "heartbeat files, never journal ops") because it changes
 constantly and would churn the board journal and the watermark fold.
 
-- **File:** `$DSH_HOME/storages/confluence/v1/workspaces/<wsKey>/presence/<writerId>.json`, one per plugin
-  mount (writer id = `<pid>-<random>` like the journal shard).
-- **Shape ([`data-model.md`](data-model.md) §4.6 is authoritative):** `{ v:1, ws:<wsKey>, writerId,
-  pid, plugin:{name,version}, updatedAt:<ISO>, sessions:[<sessionId>…] }`, ≤ 32 ids, sorted; **no
-  titles and no status** in the file (readers join titles from `session` ledger rows). Stale after 30 s.
-- **Write cadence:** upsert on `turn/end` and at most once per 10 s while this process has live sessions
-  in the workspace; written atomically (temp + rename). On dispose, rewrite the file without this
-  writer's sessions; if it becomes empty, delete it best-effort. A file older than 10 minutes may be
-  deleted by any mount (TTL cleanup).
+- **File:** `$DSH_HOME/storages/confluence/v1/workspaces/ws_0000000000000000/presence/<writerId>.json`,
+  one per plugin mount (writer id = `<pid>-<random>` like the journal shard).
+- **Shape ([`data-model.md`](data-model.md) §4.6 is authoritative):** `{ v:1, ws:"ws_0000000000000000",
+  writerId, pid, plugin:{name,version}, updatedAt:<ISO>, sessions:[<sessionId>…], sessionsMeta?:
+  [{sessionId,title?,workspaceLabel?}] }`, ≤ 32 ids, sorted; **no titles in `sessions`** and no status
+  (readers join titles from `session` ledger rows; `sessionsMeta` is display help only). Stale after 30 s.
+- **Write cadence:** upsert on `turn/end` and at most once per 10 s while this process has live sessions;
+  written atomically (temp + rename). On dispose, rewrite the file without this writer's sessions; if it
+  becomes empty, delete it best-effort. A file older than 10 minutes may be deleted by any mount
+  (TTL cleanup).
 - **Read/merge:** readers list `presence/*.json`, ignore invalid/stale files, and union sessions by
   `sessionId` (newest `updatedAt` wins for a session). A heartbeat older than **30 s** means offline
   (ADR §6). Readers retry once on `EBUSY/EPERM/EACCES`, then treat the file as absent.
 - **Consumers:** the pulse reads the merged live set (count + ≤ 2 sorted titles joined from the
   `session` ledger rows, no status words); the panel (M3) may show `running`/`idle`; `confluence_board`
   may include a "Here now" line. The ledger's `status` is never authoritative over presence.
-- Presence is workspace-scoped and user-only-suppressible: a private session never appears.
+- Presence is **profile-wide** and user-only-suppressible: a private session never appears; every live
+  peer of the profile is visible to every other session (with an optional workspace label for display).
+  M3 shows origin labels as provenance, never as a filter.
 
 ---
 
@@ -218,7 +234,7 @@ constantly and would churn the board journal and the watermark fold.
 - Readers derive `status:'cold'` when: the session is not in any fresh presence file, and its
   `lastActivityTs` is older than 30 s. No "last seen 3 h ago" recomputation is stored; the panel may
   compute relative display text at render time (a UI concern, never the pulse).
-- Cold rows still count as "known workspace sessions" for `confluence_recall` ranking (a title and last
+- Cold rows still count as "known sessions" for `confluence_recall` ranking (a title and last
   activity is enough to order candidates); recall itself re-reads logs only on demand, bounded.
 - Deliberate limitation: a session that ran before Confluence was installed has no row; it can still be
   found by recall (which enumerates live+persisted logs) but not by the ledger/pulse.
@@ -231,23 +247,25 @@ constantly and would churn the board journal and the watermark fold.
 
 `confluence_recall` is explicit, read-only, bounded, timed, and partial. It runs only inside the tool
 handler — never in the prompt provider, never on a timer, never automatically (ADR §9). It answers "what
-did earlier sessions in this workspace actually do/decide", not "what did they write on the board".
+did earlier sessions on this machine actually do/decide", not "what did they write on the board".
 
 ### 5.2 Algorithm (step by step)
 
-Inputs: resolved workspace key from the caller (`express.agent`); `query` (2–200 chars); `limit` (1–10,
-default 5); Config `recall.maxSessions:3`, `recall.maxHits:5`, `recall.timeoutMs:5000`.
+Inputs: `query` (2–200 chars); `limit` (1–10,
+default 5); Config `recall.maxSessions:3`, `recall.maxHits:5`, `recall.timeoutMs:5000`. v0.2.0 has **no
+workspace filter**: every earlier session in the profile is a candidate except the caller and private
+sessions.
 
 1. **Service check.** `const sq = ctx.get('sessionQuery')`; absent ⇒ `RECALL_UNAVAILABLE`
    (the tool is also hidden by `when` in profiles without the service). A throwing `listSessions` maps to
    the same code with the cause appended.
 2. **Enumerate.** `records = await sq.listSessions(signal)` — cheap, complete logical corpus, newest
    first, `SessionRecord = { header, live, persisted, formatStatus? }` (`dsh-session-query/lib/index.js:1067-1074`).
-3. **Canonicalize + filter.** For each record: skip if `header.id === caller.id`; skip if
-   `header.cwd === undefined`; compute `key = canonicalKey(header.cwd)` (`fs.realpath` when the path
-   exists, else lexical `path.resolve`; Windows lower-case fold; strip trailing separator) and keep only
-   `key === caller.workspaceKey`. Why not `filterSessions({kind:'cwd'})`: it compares the raw
-   `header.cwd` string exactly, so case/slash/symlink variants are missed (research fact 24; round-2 §4).
+3. **Filter.** For each record: skip if `header.id === caller.id`; skip if the session id is in
+   `privacy.privateSessions` (or is otherwise marked private). There is **no directory/workspace
+   filter** in v0.2.0 — a session started anywhere on this machine is eligible. (Why not
+   `filterSessions({kind:'cwd'})`: it compares the raw `header.cwd` string exactly, and it would
+   reintroduce the workspace partition the product removed; research fact 24; round-2 §4.)
 4. **Recency order.** Sort candidates by the ledger row's `lastActivityTs` (ISO, parsed; journal merge
    already in memory) when known, else `header.createdAt`, descending; tie-break by session id
    ascending (deterministic). Take `min(recall.maxSessions, 3)`.
@@ -273,16 +291,15 @@ default 5); Config `recall.maxSessions:3`, `recall.maxHits:5`, `recall.timeoutMs
    reasoning, never render a tool result body.
 
 ```js
-// SKETCH — recall with cooperative timeout and a partial-results ring
+// SKETCH — recall with cooperative timeout and a partial-results ring (v0.2.0: universal, no workspace)
 async function recall(agent, query, limit, signal) {
-  const ws = workspaceOf(agent); if (ws === undefined) throw conf('NO_WORKSPACE', '…')
   const sq = ctx.get('sessionQuery'); if (sq === undefined) throw conf('RECALL_UNAVAILABLE', '…')
+  const privateIds = new Set(config.privacy.privateSessions)
   const deadline = Date.now() + config.recall.timeoutMs           // tool path may use wall clock
   let records; try { records = await sq.listSessions(signal) } catch (e) {
     throw conf('RECALL_UNAVAILABLE', `session history listing failed: ${e.message}`) }
   const candidates = records
-    .filter((r) => r.header.id !== agent.id && r.header.cwd !== undefined)
-    .filter((r) => canonicalKey(r.header.cwd) === ws.key)
+    .filter((r) => r.header.id !== agent.id && !privateIds.has(r.header.id))
     .sort((a, b) => recency(b) - recency(a) || (a.header.id < b.header.id ? -1 : 1))
     .slice(0, config.recall.maxSessions)
   const perSession = []; let searched = 0; let failed = 0; let timedOut = false
@@ -295,7 +312,7 @@ async function recall(agent, query, limit, signal) {
   }
   const ring = roundRobin(perSession, Math.min(limit, config.recall.maxHits))   // deterministic
   if (ring.length === 0 && timedOut) throw conf('RECALL_TIMEOUT', `no hits within ${config.recall.timeoutMs} ms`)
-  return { hits: ring.map((doc) => hit(doc, ws)), sessions_searched: searched,
+  return { hits: ring.map((doc) => hit(doc)), sessions_searched: searched,
            sessions_matched: perSession.filter((s) => s.docs.length > 0).length,
            partial: timedOut || failed > 0, timed_out: timedOut }
 }
@@ -330,14 +347,12 @@ a fully-redacted excerpt is replaced by the marker, not dropped silently.
   `^session:([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([0-9]{1,9})$`; `seq` is the JSON integer log position.
 - **Expansion algorithm** (`confluence_read` when `ref` matches):
   1. Parse; malformed ⇒ `INVALID_REF`.
-  2. **Authorize before reading:** if the session id equals the caller, allow; else resolve the target's
-     workspace and compare to the caller's frozen key. Live path: `ctx.sessions.get(id)` exists → use its
-     `header.cwd` (cheap). Cold path: `listSessions()` (lightweight) → find the record → canonicalize
-     `header.cwd`. Cache the decision per `(callerWs, sessionId)` for 60 s (bounded map, ≤ 128 entries).
-     A non-matching or unknown session returns **`NOT_FOUND`** (the same error as a missing
-     id: no cross-workspace existence oracle). **Direct refs to a private/opted-out target behave as
-     not-found (same as missing)** — the privacy filter runs before the authority/read step, so a ref
-     reveals nothing about suppressed sessions.
+  2. **Authorize before reading:** a session id equal to the caller is allowed; otherwise the privacy
+     filter runs first — a private/opted-out target behaves as **missing** (`NOT_FOUND`, no content, no
+     excerpt) and reveals nothing. There is **no workspace comparison** in v0.2.0: any readable session
+     in the profile can be opened (single-user local profile; ADR 0007). The decision is cached per
+     `(caller, sessionId)` for 60 s (bounded map, ≤ 128 entries). An unknown session returns
+     **`NOT_FOUND`** (the same error as a missing id: no existence oracle).
   3. `window = await sq.readEvent({ sessionId, seq, before: 1, after: 1 })` — bounded window
      `before/after ≤ readWindowMax (default 50)`; returns `{session, target, events, startSeq, endSeq}`
      (`dsh-session-query/lib/index.js:1204-1238`). In v1 the window is at most 3 events (target ± 1).
@@ -368,7 +383,7 @@ reserves `signal`/`watermark` only). `redactions:N` is appended when redaction c
 | One session's `filterEvents` throws | Skip it, `partial:true`, continue with the rest; the error goes to the debug log with the session id. |
 | Timeout | Partial ring returned with `timed_out:true`; zero hits ⇒ `RECALL_TIMEOUT`. Never throws after returning hits. |
 | Huge logs | Per-session load is the cost unit: 3 sessions max; if a load exceeds the deadline it is abandoned (result discarded), and the next session is not started. |
-| No workspace key | All six tools absent; nothing to recall. |
+| Unresolvable origin | Valid: the session row is still written, with no `origin` block; nothing to recall is impossible — memory is universal (ADR 0007). |
 | Private/opted-out caller | Tools hidden/pulse suppressed; recall never runs for it. |
 | Private/opted-out *target* | Target sessions are excluded from enumeration (M2 privacy filter applied before recall), and direct refs to them behave as not-found (same as missing). |
 | `readEvent` seq out of range / session vanished | `NOT_FOUND`; no retry. |
@@ -381,14 +396,15 @@ its deadline is the caller's `AbortSignal` plus `recall.timeoutMs`.
 ## 7. Pseudo-code: ledger capture and flush
 
 ```js
-// SKETCH — accumulator + coalesced journal append (Host plugin code)
-const acc = new Map()   // sessionId -> { ws, title, status, turns, lastActivityTs, effectiveDir,
-                        //                 files:[], parentSession, origin, dirty, timer }
+// SKETCH — accumulator + coalesced journal append (Host plugin code; v0.2.0 universal)
+const acc = new Map()   // sessionId -> { origin, title, status, turns, lastActivityTs, effectiveDir,
+                        //                 files:[], parentSession, dirty, timer }
 
 ctx.on('session/event', (session, event) => {
-  const ws = workspaceOfSession(session); if (ws === undefined) return
-  if (isPrivate(session) || isDisabledWorkspace(ws)) return
-  const row = acc.get(session.id) ?? seedRow(session, ws)
+  if (isPrivate(session)) return
+  // origin is best-effort provenance, never a gate: { workspaceKey?, workspaceLabel? } | null
+  const origin = originOfSession(session)
+  const row = acc.get(session.id) ?? seedRow(session, origin)
   switch (event.type) {
     case 'turn/start': row.status = 'live'; break
     case 'turn/end':
@@ -445,7 +461,7 @@ Recall (R):
 
 | # | Test | Assertion |
 |---|---|---|
-| R1 | Canonical workspace | Sessions with case-variant and symlinked `cwd` are included; a different directory is excluded; a session with no `cwd` is excluded. |
+| R1 | Universal candidate set | Sessions in different directories are all included; a session with no `cwd` is still included (no origin); the caller and private sessions are excluded |
 | R2 | Caller excluded | The caller's own session never appears in hits. |
 | R3 | Literal semantics | Query `a.*b` matches only literal text; whitespace-flexible and case-insensitive matches succeed; no FTS call is made (service spy). |
 | R4 | Caps | 5 candidate sessions ⇒ only 3 loaded; 12 hits ⇒ at most 5 returned, round-robin across sessions, deterministic order. |

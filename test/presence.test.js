@@ -1,14 +1,15 @@
-// WP3b tests — presence heartbeat files, synchronous live() cache, stale filtering, privacy.
-// Contract: implementation-interfaces.md §7 + Lead WP3 addendum; ledger-recall.md §3;
-// data-model.md §4.6; store-format.md §10.
+// WP3b tests — universal presence: one global heartbeat per mount listing all live sessions,
+// sessionsMeta provenance/title/status, synchronous live() cache, stale filtering, privacy.
+// Contract: docs/adr/0007-universal-memory-scope.md; docs/plan/scope-refactor-delta.md §5;
+// docs/design/ledger-recall.md §3; docs/design/data-model.md §4.6.
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { Presence, presenceConstants } from '../lib/presence.js'
 
-const WS_KEY = 'ws_1111111111111111'
-const OTHER_WS_KEY = 'ws_2222222222222222'
+const GLOBAL_WS = 'ws_0000000000000000'
+const LEGACY_WS = 'ws_1111111111111111'
 
 function makeClock(start = 1_700_000_000_000) {
   let value = start
@@ -21,7 +22,7 @@ function makeClock(start = 1_700_000_000_000) {
   }
 }
 
-function makeJournal(wsKey, clock) {
+function makeJournal(wsKey) {
   const files = {}
   const records = []
   return {
@@ -48,14 +49,25 @@ function makeJournal(wsKey, clock) {
   }
 }
 
-function makeStore(clock) {
-  const journals = new Map()
+/** Fake JournalStore: exactly one global journal owns the presence directory. */
+function makeStore() {
+  const journal = makeJournal(GLOBAL_WS)
+  const legacyRecords = []
   return {
     writerId: '4242-abcdef01',
-    journals,
-    async openWorkspace(wsKey) {
-      if (!journals.has(wsKey)) journals.set(wsKey, makeJournal(wsKey, clock))
-      return journals.get(wsKey)
+    journal,
+    legacyRecords,
+    async openGlobal() {
+      return journal
+    },
+    mergedRecords() {
+      return [...journal.records(), ...legacyRecords]
+    },
+    onMergedChange() {
+      return () => {}
+    },
+    async refreshMerged() {
+      return false
     },
   }
 }
@@ -92,7 +104,7 @@ function makeTimers() {
 
 function createPresence(options = {}) {
   const clock = options.clock ?? makeClock()
-  const store = options.store ?? makeStore(clock)
+  const store = options.store ?? makeStore()
   const timers = options.timers ?? makeTimers()
   const ctx = options.ctx ?? makeCtx()
   const presence = new Presence({
@@ -110,221 +122,286 @@ function createPresence(options = {}) {
   return { presence, clock, store, timers, ctx }
 }
 
+/** Host descriptors per the Lead's integration contract: `{id, sessionId, title, workspaceLabel, status}`. */
 function descriptors(...items) {
   return () =>
     items.map((item) => ({
+      id: item.sessionId,
       sessionId: item.sessionId,
-      wsKey: item.wsKey ?? WS_KEY,
       title: item.title,
+      workspaceLabel: item.workspaceLabel,
       status: item.status ?? 'live',
     }))
 }
 
 const iso = (clock, offsetMs = 0) => new Date(clock.now() - offsetMs).toISOString()
 
+async function settle(times = 6) {
+  for (let index = 0; index < times; index += 1) await new Promise((resolve) => setImmediate(resolve))
+}
+
 // ---------------------------------------------------------------------------
 // heartbeat file
 // ---------------------------------------------------------------------------
 
-test('CON-L7 heartbeat file: session ids only, sorted, no titles/status, journal never written', async () => {
+test('CON-P1 one global heartbeat: ALL live sessions + sessionsMeta, no per-workspace files', async () => {
   const { presence, store, ctx } = createPresence()
   const disposer = presence.attach(
     ctx,
     descriptors(
-      { sessionId: 'session-b', title: 'B title' },
-      { sessionId: 'session-a', title: 'A title' },
+      { sessionId: 'session-b', title: 'B title', workspaceLabel: 'project-b', status: 'idle' },
+      { sessionId: 'session-a', title: 'A title', workspaceLabel: 'project-a', status: 'live' },
     ),
   )
   await presence.writeHeartbeat()
-  const journal = store.journals.get(WS_KEY)
-  const file = journal.files['4242-abcdef01']
-  assert.ok(file, 'heartbeat file written for the workspace')
+  const files = store.journal.files
+  assert.deepEqual(Object.keys(files), ['4242-abcdef01'], 'exactly one heartbeat file for the whole profile')
+  const file = files['4242-abcdef01']
   assert.equal(file.v, 1)
-  assert.equal(file.ws, WS_KEY)
+  assert.equal(file.ws, GLOBAL_WS, 'heartbeat lives under the global journal')
   assert.equal(file.writerId, '4242-abcdef01')
   assert.equal(file.pid, 4242)
   assert.deepEqual(file.plugin, { name: 'dsh-confluence', version: '0.1.0' })
   assert.match(file.updatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-  assert.deepEqual(file.sessions, ['session-a', 'session-b'])
-  assert.equal('title' in file, false, 'titles never enter the heartbeat file')
-  assert.equal(Array.isArray(file.sessions) && typeof file.sessions[0], 'string')
+  assert.deepEqual(file.sessions, ['session-a', 'session-b'], 'all live session ids, sorted')
+  assert.deepEqual(file.sessionsMeta, {
+    'session-a': { title: 'A title', workspaceLabel: 'project-a', status: 'live' },
+    'session-b': { title: 'B title', workspaceLabel: 'project-b', status: 'idle' },
+  })
   // Presence never appends journal records.
-  assert.equal(journal.records().length, 0)
+  assert.equal(store.journal.records().length, 0)
   await presence.dispose()
   disposer()
 })
 
-test('UT-PRESENCE-01 live() is synchronous and returns titles/status joined from descriptors', async () => {
+test('UT-PRESENCE-01 live() is synchronous and returns titles/status/workspaceLabel for all peers', async () => {
   const { presence, ctx } = createPresence()
-  presence.attach(ctx, descriptors({ sessionId: 'session-a', title: 'Auth work', status: 'live' }))
-  await presence.writeHeartbeat()
-  await presence.refreshPresence(WS_KEY)
-  const live = presence.live(WS_KEY)
-  assert.equal(Array.isArray(live), true)
-  assert.equal(live.length, 1)
-  assert.deepEqual(
-    { sessionId: live[0].sessionId, title: live[0].title, status: live[0].status },
-    { sessionId: 'session-a', title: 'Auth work', status: 'live' },
+  presence.attach(
+    ctx,
+    descriptors(
+      { sessionId: 'session-a', title: 'Auth work', workspaceLabel: 'project-a', status: 'live' },
+      { sessionId: 'session-b', title: 'Data work', workspaceLabel: 'project-b', status: 'idle' },
+    ),
   )
-  assert.equal(typeof live[0].updatedAt, 'string')
+  await presence.writeHeartbeat()
+  await presence.refreshPresence()
+  const live = presence.live()
+  assert.equal(Array.isArray(live), true)
+  assert.deepEqual(
+    live.map((entry) => ({
+      sessionId: entry.sessionId,
+      title: entry.title,
+      status: entry.status,
+      workspaceLabel: entry.workspaceLabel,
+    })),
+    [
+      { sessionId: 'session-a', title: 'Auth work', status: 'live', workspaceLabel: 'project-a' },
+      { sessionId: 'session-b', title: 'Data work', status: 'idle', workspaceLabel: 'project-b' },
+    ],
+  )
+  // A v0.1.0 workspace argument is accepted and ignored: the view is universal.
+  assert.equal(presence.live(LEGACY_WS).length, 2)
   await presence.dispose()
 })
 
 test('UT-PRESENCE-02 heartbeats older than 30 s are offline (live filter + refresh filter)', async () => {
-  const { presence, clock, stop } = await setupWithRemoteHeartbeat(5000)
-  assert.equal(presence.live(WS_KEY).length, 1)
+  const { presence, clock } = await setupWithRemoteHeartbeat(5000)
+  assert.equal(presence.live().length, 1)
   clock.advance(20_000)
-  assert.equal(presence.live(WS_KEY).length, 1, '25 s old is still fresh')
+  assert.equal(presence.live().length, 1, '25 s old is still fresh')
   clock.advance(6000)
-  assert.equal(presence.live(WS_KEY).length, 0, 'stale after 30 s, without another refresh')
+  assert.equal(presence.live().length, 0, 'stale after 30 s, without another refresh')
   await presence.dispose()
-  if (stop) stop()
 })
 
-test('UT-PRESENCE-03 remote writer titles/status are joined from ledger session rows', async () => {
+test('UT-PRESENCE-03 remote sessionsMeta joins title/status/workspaceLabel across writers', async () => {
   const clock = makeClock()
-  const store = makeStore(clock)
-  const journal = await store.openWorkspace(WS_KEY)
-  journal.records = () => [
+  const store = makeStore()
+  store.journal.files['777-aaaaaaaa'] = {
+    v: 1,
+    ws: GLOBAL_WS,
+    writerId: '777-aaaaaaaa',
+    pid: 777,
+    plugin: { name: 'dsh-confluence', version: '0.1.0' },
+    updatedAt: iso(clock, 4000),
+    sessions: ['session-remote'],
+    sessionsMeta: {
+      'session-remote': { title: 'Remote work', workspaceLabel: 'project-remote', status: 'idle' },
+    },
+  }
+  const { presence } = createPresence({ store, clock })
+  await presence.refreshPresence()
+  const live = presence.live()
+  assert.equal(live.length, 1)
+  assert.equal(live[0].sessionId, 'session-remote')
+  assert.equal(live[0].title, 'Remote work')
+  assert.equal(live[0].status, 'idle')
+  assert.equal(live[0].workspaceLabel, 'project-remote')
+  assert.equal(live[0].writerId, '777-aaaaaaaa')
+  await presence.dispose()
+})
+
+test('UT-PRESENCE-03b missing sessionsMeta falls back to merged ledger rows (legacy heartbeat)', async () => {
+  const clock = makeClock()
+  const store = makeStore()
+  store.journal.records = () => [
     {
       v: 1,
       type: 'session',
       id: 'session-remote',
-      ws: WS_KEY,
+      ws: GLOBAL_WS,
       seq: '01J00000000000000000000A',
       ts: iso(clock, 4000),
       title: 'Remote work',
       status: 'idle',
       turns: 2,
       lastActivityTs: iso(clock, 4000),
+      origin: { workspaceKey: LEGACY_WS, workspaceLabel: 'D:\\legacy\\project-remote' },
     },
   ]
-  journal.files['777-aaaaaaaa'] = {
+  // A v0.1.0-style heartbeat: ids only, no sessionsMeta.
+  store.journal.files['777-aaaaaaaa'] = {
     v: 1,
-    ws: WS_KEY,
+    ws: LEGACY_WS,
     writerId: '777-aaaaaaaa',
-    pid: 777,
-    plugin: { name: 'dsh-confluence', version: '0.1.0' },
     updatedAt: iso(clock, 4000),
     sessions: ['session-remote'],
   }
   const { presence } = createPresence({ store, clock })
-  await presence.refreshPresence(WS_KEY)
-  const live = presence.live(WS_KEY)
+  await presence.refreshPresence()
+  const live = presence.live()
   assert.equal(live.length, 1)
-  assert.equal(live[0].sessionId, 'session-remote')
   assert.equal(live[0].title, 'Remote work')
   assert.equal(live[0].status, 'idle')
-  assert.equal(live[0].writerId, '777-aaaaaaaa')
+  assert.equal(live[0].workspaceLabel, 'project-remote', 'ledger origin label is basename-only')
   await presence.dispose()
 })
 
 test('UT-PRESENCE-04 corrupt/absent presence files are ignored, never throw', async () => {
   const clock = makeClock()
-  const store = makeStore(clock)
-  const journal = await store.openWorkspace(WS_KEY)
-  journal.files['111-aaaaaaaa'] = 'not an object'
-  journal.files['222-bbbbbbbb'] = { v: 1, updatedAt: 'not-a-date', sessions: ['session-x'] }
-  journal.files['333-cccccccc'] = { v: 1, updatedAt: iso(clock), sessions: 'not-an-array' }
+  const store = makeStore()
+  store.journal.files['111-aaaaaaaa'] = 'not an object'
+  store.journal.files['222-bbbbbbbb'] = { v: 1, updatedAt: 'not-a-date', sessions: ['session-x'] }
+  store.journal.files['333-cccccccc'] = { v: 1, updatedAt: iso(clock), sessions: 'not-an-array' }
   const { presence } = createPresence({ store, clock })
-  await presence.refreshPresence(WS_KEY)
-  assert.deepEqual(presence.live(WS_KEY), [])
+  await presence.refreshPresence()
+  assert.deepEqual(presence.live(), [])
   // readPresence throwing is tolerated too.
-  journal.readPresence = async () => {
+  store.journal.readPresence = async () => {
     throw new Error('EBUSY')
   }
-  await presence.refreshPresence(WS_KEY)
-  assert.deepEqual(presence.live(WS_KEY), [])
+  await presence.refreshPresence()
+  assert.deepEqual(presence.live(), [])
   await presence.dispose()
 })
 
-test('UT-PRESENCE-05 private sessions and disabled workspaces never appear', async () => {
+test('UT-PRESENCE-05 private sessions never appear (local write and remote read)', async () => {
   const { presence, ctx, store, clock } = createPresence({
     config: { privacy: { privateSessions: ['session-private'] } },
   })
   presence.attach(
     ctx,
     descriptors(
-      { sessionId: 'session-a' },
-      { sessionId: 'session-private' },
-      { sessionId: 'session-other', wsKey: OTHER_WS_KEY },
+      { sessionId: 'session-a', title: 'A', workspaceLabel: 'project-a' },
+      { sessionId: 'session-private', title: 'Secret', workspaceLabel: 'secret-project' },
     ),
   )
   await presence.writeHeartbeat()
-  const file = store.journals.get(WS_KEY).files['4242-abcdef01']
+  const file = store.journal.files['4242-abcdef01']
   assert.deepEqual(file.sessions, ['session-a'])
+  assert.deepEqual(Object.keys(file.sessionsMeta), ['session-a'])
   // A remote writer advertising the private session is filtered on read too.
-  store.journals.get(WS_KEY).files['999-aaaaaaaa'] = {
+  store.journal.files['999-aaaaaaaa'] = {
     v: 1,
     updatedAt: iso(clock),
     sessions: ['session-private'],
+    sessionsMeta: { 'session-private': { title: 'Secret', workspaceLabel: 'secret-project' } },
   }
-  await presence.refreshPresence(WS_KEY)
+  await presence.refreshPresence()
   assert.deepEqual(
-    presence.live(WS_KEY).map((entry) => entry.sessionId),
+    presence.live().map((entry) => entry.sessionId),
     ['session-a'],
   )
   await presence.dispose()
 })
 
-test('UT-PRESENCE-06 heartbeat is removed when the workspace loses its live sessions', async () => {
+test('UT-PRESENCE-06 heartbeat is removed when the mount loses all live sessions', async () => {
   const { presence, ctx, store } = createPresence()
-  let current = [{ sessionId: 'session-a', wsKey: WS_KEY, title: 'A', status: 'live' }]
+  let current = [{ id: 'session-a', sessionId: 'session-a', title: 'A', workspaceLabel: 'project-a' }]
   presence.attach(ctx, () => current)
   await presence.writeHeartbeat()
-  assert.ok(store.journals.get(WS_KEY).files['4242-abcdef01'])
+  assert.ok(store.journal.files['4242-abcdef01'])
   current = []
   await presence.writeHeartbeat()
-  assert.equal(store.journals.get(WS_KEY).files['4242-abcdef01'], undefined)
+  assert.equal(store.journal.files['4242-abcdef01'], undefined)
   await presence.dispose()
 })
 
 test('UT-PRESENCE-07 attach registers heartbeat 10 s + poll config.store.pollMs timers and turn/end hook', async () => {
   const { presence, ctx, timers, store } = createPresence({ config: { store: { pollMs: 4000 } } })
-  presence.attach(ctx, descriptors({ sessionId: 'session-a' }))
+  presence.attach(ctx, descriptors({ sessionId: 'session-a', title: 'A', workspaceLabel: 'project-a' }))
   const intervals = timers.intervals.map((entry) => entry.ms).sort((a, b) => a - b)
   assert.deepEqual(intervals, [4000, presenceConstants.HEARTBEAT_INTERVAL_MS])
   assert.ok(ctx.handlers.has('session/event'), 'subscribed to session/event for turn/end')
-  const before = store.journals.size
   ctx.emit('session/event', {}, { type: 'turn/end' })
-  for (let index = 0; index < 6; index += 1) await new Promise((resolve) => setImmediate(resolve))
-  const journal = store.journals.get(WS_KEY)
-  assert.ok(journal, 'turn/end triggered a heartbeat+refresh cycle')
-  assert.ok(journal.files['4242-abcdef01'])
-  assert.equal(before <= store.journals.size, true)
+  await settle()
+  assert.ok(store.journal.files['4242-abcdef01'], 'turn/end triggered a heartbeat+refresh cycle')
   await presence.dispose()
   assert.ok(timers.intervals.every((entry) => entry.cleared), 'dispose clears both timers')
-  assert.equal(presence.live(WS_KEY).length, 0, 'dispose clears the cache')
+  assert.equal(presence.live().length, 0, 'dispose clears the cache')
 })
 
-test('UT-PRESENCE-08 refreshPresence(wsKey, writerId) filters to one writer', async () => {
+test('UT-PRESENCE-08 refreshPresence(ignoredScope, writerId) filters to one writer', async () => {
   const clock = makeClock()
-  const store = makeStore(clock)
-  const journal = await store.openWorkspace(WS_KEY)
-  journal.files['111-aaaaaaaa'] = { v: 1, updatedAt: iso(clock), sessions: ['session-a'] }
-  journal.files['222-bbbbbbbb'] = { v: 1, updatedAt: iso(clock), sessions: ['session-b'] }
+  const store = makeStore()
+  store.journal.files['111-aaaaaaaa'] = { v: 1, updatedAt: iso(clock), sessions: ['session-a'] }
+  store.journal.files['222-bbbbbbbb'] = { v: 1, updatedAt: iso(clock), sessions: ['session-b'] }
   const { presence } = createPresence({ store, clock })
-  await presence.refreshPresence(WS_KEY, '222-bbbbbbbb')
+  await presence.refreshPresence(LEGACY_WS, '222-bbbbbbbb')
   assert.deepEqual(
-    presence.live(WS_KEY).map((entry) => entry.writerId),
+    presence.live().map((entry) => entry.writerId),
     ['222-bbbbbbbb'],
   )
+  await presence.refreshPresence()
+  assert.equal(presence.live().length, 2, 'the legacy workspace scope never filters peers')
   await presence.dispose()
 })
 
-/** helper: a remote heartbeat written into the fake journal at `ageMs` before now */
+/** helper: a remote heartbeat written into the global journal at `ageMs` before now */
 async function setupWithRemoteHeartbeat(ageMs) {
   const clock = makeClock()
-  const store = makeStore(clock)
-  const journal = await store.openWorkspace(WS_KEY)
-  journal.files['777-aaaaaaaa'] = {
+  const store = makeStore()
+  store.journal.files['777-aaaaaaaa'] = {
     v: 1,
-    ws: WS_KEY,
+    ws: GLOBAL_WS,
     writerId: '777-aaaaaaaa',
     updatedAt: iso(clock, ageMs),
     sessions: ['session-remote'],
+    sessionsMeta: { 'session-remote': { title: 'Remote', workspaceLabel: 'project-remote' } },
   }
   const { presence } = createPresence({ store, clock })
-  await presence.refreshPresence(WS_KEY)
+  await presence.refreshPresence()
   return { presence, clock }
 }
+
+test('UT-PRESENCE-09 heartbeat caps live ids at 32 and keeps sessionsMeta in sync', async () => {
+  const { presence, ctx, store } = createPresence()
+  const many = Array.from({ length: 40 }, (_, index) => ({
+    sessionId: `session-${String(index).padStart(2, '0')}`,
+    title: `T${index}`,
+    workspaceLabel: 'project-a',
+  }))
+  presence.attach(ctx, descriptors(...many))
+  await presence.writeHeartbeat()
+  const file = store.journal.files['4242-abcdef01']
+  assert.equal(file.sessions.length, presenceConstants.MAX_SESSIONS_PER_FILE)
+  assert.deepEqual(file.sessions, [...file.sessions].sort(), 'ids stay sorted')
+  assert.deepEqual(Object.keys(file.sessionsMeta).sort(), file.sessions)
+  await presence.dispose()
+})
+
+test('presence constants keep the 10 s/30 s/32-session contract', () => {
+  assert.equal(presenceConstants.HEARTBEAT_INTERVAL_MS, 10_000)
+  assert.equal(presenceConstants.PRESENCE_STALE_MS, 30_000)
+  assert.equal(presenceConstants.MAX_SESSIONS_PER_FILE, 32)
+})

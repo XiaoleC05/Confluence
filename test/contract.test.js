@@ -1,10 +1,14 @@
-// Confluence / 汇流 — dependency-free packaging contract tests (v0.1.0 implementation).
+// Confluence / 汇流 — dependency-free packaging contract tests (v0.2.0 implementation).
 //
 // These tests verify the *packaging and entry-point contract* of the implemented plugin:
 // bundle manifest/patch, runtime file coverage, locales, icon, the Host entry surface,
-// the Web client module identity and the offline posture. Behaviour is covered by the
-// per-module tests and test/integration.test.js. The standalone mirror of these checks
-// is scripts/check.mjs.
+// the universal-memory constants, the Web client module identity and the offline posture.
+// Behaviour is covered by the per-module tests and test/integration.test.js. The standalone
+// mirror of these checks is scripts/check.mjs.
+//
+// The memory scope is UNIVERSAL from v0.2.0 (ADR 0007): one global scope
+// `{ key: 'global', label: 'All sessions' }` backed by the reserved store key
+// `ws_0000000000000000`; workspaces are provenance only.
 //
 // Run from the repository root:
 //   node --test --test-force-exit "test/*.test.js"
@@ -103,20 +107,27 @@ const DEFAULTS = {
     watch: true,
   },
   pulse: { enabled: true, maxHeadlines: 3, maxPeers: 2, maxChars: 1400 },
-  ledger: { enabled: true, maxFilesPerSession: 8, maxSessionsPerWorkspace: 200, fileHintsInPulse: false },
+  ledger: { enabled: true, maxFilesPerSession: 8, maxSessions: 200, fileHintsInPulse: false },
   recall: { enabled: true, maxSessions: 3, maxHits: 5, timeoutMs: 5000 },
   privacy: {
     redact: true,
     redactTitles: true,
     denyPathPatterns: ['**/.env*', '**/*.pem'],
     privateSessions: [],
-    disabledWorkspaces: [],
     redactPatterns: [],
   },
   ui: { enabled: true, pollMs: 5000 },
   export: { enabled: false, dir: '.confluence/export' },
   debug: { logFile: '' },
 }
+
+/** v0.2.0 universal-memory contract constants (delta §0). */
+const GLOBAL_SCOPE_KEY = 'ws_0000000000000000'
+const GLOBAL_SCOPE_LABEL = 'All sessions'
+const MEMORY_SCOPE = { key: 'global', label: GLOBAL_SCOPE_LABEL }
+const PULSE_TAG_NAME = 'confluence-memory'
+/** Panel routes in v0.2.0; the v0.1.0 `/workspaces` route is gone. */
+const PANEL_ROUTES = ['ping', 'overview', 'entry']
 
 /** Docs the index must name (design package + implementation docs). */
 const REQUIRED_DOCS = [
@@ -133,6 +144,8 @@ const REQUIRED_DOCS = [
   'adr/0004-privacy-and-consent.md',
   'adr/0005-ui-transport.md',
   'adr/0006-solo-bench-integration.md',
+  'adr/0007-universal-memory-scope.md',
+  'upgrade-v0.2.md',
   'design/architecture.md',
   'design/data-model.md',
   'design/store-format.md',
@@ -148,6 +161,7 @@ const REQUIRED_DOCS = [
   'plan/m0-spikes.md',
   'plan/implementation-interfaces.md',
   'plan/implementation-status.md',
+  'plan/scope-refactor-delta.md',
   'publishing.md',
   'install.md',
   'planning/team-brief.md',
@@ -221,17 +235,19 @@ function hostSources() {
 // manifest
 // ---------------------------------------------------------------------------
 
-test('package.json is a private ESM v0.1.0 bundle manifest with the Web client half', () => {
+test('package.json is a private ESM v0.2.0 bundle manifest with the Web client half', () => {
   assert.equal(PACKAGE_JSON.name, 'dsh-confluence')
-  assert.equal(PACKAGE_JSON.version, '0.1.0')
+  assert.equal(PACKAGE_JSON.version, '0.2.0')
   assert.equal(PACKAGE_JSON.private, true)
   assert.equal(PACKAGE_JSON.type, 'module')
   assert.equal(PACKAGE_JSON.main, './index.js')
   assert.equal(PACKAGE_JSON.license, 'MIT')
-  assert.match(PACKAGE_JSON.description, /workspace memory/i)
+  assert.match(PACKAGE_JSON.description, /universal shared memory|shared memory/i)
   assert.match(PACKAGE_JSON.description, /pulse/)
   assert.match(PACKAGE_JSON.description, /board/)
   assert.match(PACKAGE_JSON.description, /recall/i)
+  assert.match(PACKAGE_JSON.description, /working directory/i, 'v0.2.0 is directory-independent (universal)')
+  assert.doesNotMatch(PACKAGE_JSON.description, /workspace memory/i, 'v0.2.0 is no longer workspace-scoped')
   assert.doesNotMatch(PACKAGE_JSON.description, /design-stage/i, 'the manifest must no longer describe a scaffold')
   assert.match(PACKAGE_JSON.author, /XiaoleC05/i)
   assert.match(PACKAGE_JSON.repository.url, /github\.com\/XiaoleC05\/Confluence\.git$/)
@@ -296,7 +312,7 @@ test('cordis.patch.yml inserts exactly one confluence row without !!js', () => {
   assert.equal(patch.includes('!!js'), false, 'the bundle patch must not use !!js expressions')
 })
 
-test('cordis.patch.yml carries the complete v1 default configuration', () => {
+test('cordis.patch.yml carries the complete v0.2.0 default configuration', () => {
   const patch = readFileSync(PATCH_PATH, 'utf8')
   for (const section of ['store', 'pulse', 'ledger', 'recall', 'privacy', 'ui', 'export', 'debug']) {
     assert.match(patch, new RegExp(`^        ${section}:$`, 'm'), `missing config section ${section}`)
@@ -313,15 +329,13 @@ test('cordis.patch.yml carries the complete v1 default configuration', () => {
     'maxPeers: 2',
     'maxChars: 1400',
     'maxFilesPerSession: 8',
-    'maxSessionsPerWorkspace: 200',
+    'maxSessions: 200',
     'fileHintsInPulse: false',
-    'maxSessions: 3',
     'maxHits: 5',
     'timeoutMs: 5000',
     'redact: true',
     'redactTitles: true',
     'privateSessions: []',
-    'disabledWorkspaces: []',
     'redactPatterns: []',
     'enabled: false',
     "dir: '.confluence/export'",
@@ -332,6 +346,12 @@ test('cordis.patch.yml carries the complete v1 default configuration', () => {
   }
   assert.ok(patch.includes("'**/.env*'"), 'patch must keep the default denyPathPatterns entry')
   assert.ok(patch.includes("'**/*.pem'"), 'patch must keep the default denyPathPatterns entry')
+  // v0.2.0 breaking config change: the workspace opt-out is gone, the ledger cap renamed.
+  assert.ok(!patch.includes('disabledWorkspaces'), 'the patch must not carry the removed privacy.disabledWorkspaces')
+  assert.ok(!patch.includes('maxSessionsPerWorkspace'), 'the patch must use ledger.maxSessions, not the old key')
+  assert.equal((patch.match(/^\s+recall:$/gm) ?? []).length, 1, 'the recall section still exists exactly once')
+  assert.match(patch, /^        recall:$/m)
+  assert.match(patch, /^          maxSessions: 3$/m, 'recall.maxSessions (tool cap) must stay distinct from ledger.maxSessions')
 })
 
 // ---------------------------------------------------------------------------
@@ -352,8 +372,10 @@ test('locale resources parse and carry meaningful display metadata', () => {
   const zh = JSON.parse(readFileSync(path.join(ROOT, 'locale', 'zh.json'), 'utf8'))
   assert.equal(en.meta.title, 'Confluence')
   assert.equal(zh.meta.title, '汇流')
-  assert.equal(en.meta.description, 'Shares workspace memory between sessions that run in the same project, fully offline.')
-  assert.equal(zh.meta.description, '同一工作区内的会话共享记忆，完全离线运行。')
+  assert.equal(en.meta.description, 'One shared memory for every session in this profile, fully offline.')
+  assert.equal(zh.meta.description, '本配置文件内所有会话共享同一份记忆，完全离线运行。')
+  assert.match(en.meta.description, /every session in this profile/i)
+  assert.doesNotMatch(en.meta.description, /workspace/i, 'display metadata must not claim workspace scope')
 })
 
 test('locale UI key sets are aligned and keep the scaffold plus the M3 panel strings', () => {
@@ -362,7 +384,8 @@ test('locale UI key sets are aligned and keep the scaffold plus the M3 panel str
   const enKeys = deepKeys(en.ui)
   const zhKeys = deepKeys(zh.ui)
   assert.deepEqual(enKeys, zhKeys, 'en/zh UI key sets must be identical')
-  assert.ok(enKeys.length >= 85, `expected the full M3 inventory (>=85 keys), found ${enKeys.length}`)
+  assert.equal(enKeys.length, 86, 'v0.2.0 ships 86 UI keys (85 + scope.global)')
+  assert.ok(enKeys.length >= 86, `expected the full v0.2.0 inventory (>=86 keys), found ${enKeys.length}`)
   const keys = new Set(enKeys)
   for (const key of SCAFFOLD_UI_KEYS) {
     assert.ok(keys.has(key), `scaffold UI string disappeared: ${key}`)
@@ -371,6 +394,15 @@ test('locale UI key sets are aligned and keep the scaffold plus the M3 panel str
   }
   for (const key of ['panel', 'board.title', 'questions.open', 'markRead', 'confirm.disable.action', 'state.loadError']) {
     assert.ok(keys.has(key), `missing required panel string ${key}`)
+  }
+  // v0.2.0 global-panel additions and re-framings.
+  assert.equal(en.ui['scope.global'], 'All sessions')
+  assert.equal(zh.ui['scope.global'], '全部会话')
+  assert.equal(en.ui['workspace.label'], 'Origin')
+  assert.match(en.ui['search.label'], /shared memory/i)
+  assert.match(en.ui['panel.subtitle'], /every session in this profile/i)
+  for (const [key, value] of Object.entries(en.ui)) {
+    assert.doesNotMatch(value, /this workspace|the same workspace|workspace board/i, `en ui.${key} still says workspace-scoped: ${value}`)
   }
 })
 
@@ -413,11 +445,112 @@ test('index.js exports the implemented Host entry surface', async () => {
   assert.equal(typeof module.applyWithDeps, 'function', 'applyWithDeps must be exported for hermetic tests')
   assert.equal(module.default, undefined, 'must use the apply(ctx, config) export form')
   assert.equal(typeof module.DEFAULTS, 'object')
-  assert.equal(module.VERSION, '0.1.0')
+  assert.equal(module.VERSION, '0.2.0')
   assert.equal(Object.isFrozen(module.DEFAULTS), true, 'DEFAULTS must stay frozen')
   assert.ok(Array.isArray(module.inject), 'inject must be an array')
   assert.ok(module.inject.includes('tools'), "inject must include 'tools'")
   assert.deepEqual(JSON.parse(JSON.stringify(module.DEFAULTS)), DEFAULTS)
+})
+
+// ---------------------------------------------------------------------------
+// universal memory scope (v0.2.0, ADR 0007)
+// ---------------------------------------------------------------------------
+
+test('v0.2.0 universal-memory constants agree across the Host modules', async () => {
+  const store = await import(pathToFileURL(path.join(LIB_DIR, 'store.js')).href)
+  const board = await import(pathToFileURL(path.join(LIB_DIR, 'board.js')).href)
+  const exportModule = await import(pathToFileURL(path.join(LIB_DIR, 'export.js')).href)
+  const facade = await import(pathToFileURL(path.join(LIB_DIR, 'facade.js')).href)
+  const hostui = await import(pathToFileURL(path.join(LIB_DIR, 'hostui.js')).href)
+  const watermark = await import(pathToFileURL(path.join(LIB_DIR, 'watermark.js')).href)
+
+  for (const [name, module] of [['store.js', store], ['board.js', board], ['export.js', exportModule]]) {
+    assert.equal(module.GLOBAL_SCOPE_KEY, GLOBAL_SCOPE_KEY, `${name} must export the reserved global scope key`)
+  }
+  assert.equal(store.GLOBAL_SCOPE_LABEL, GLOBAL_SCOPE_LABEL)
+  assert.equal(exportModule.EXPORT_SCOPE, 'global', 'the export manifest must declare scope:"global"')
+  assert.deepEqual({ ...facade.MEMORY_SCOPE }, MEMORY_SCOPE, 'facade scope must be the universal memory scope')
+  assert.deepEqual({ ...hostui.PANEL_SCOPE }, MEMORY_SCOPE, 'panel routes must serve the global scope')
+  assert.equal(watermark.PULSE_TAG_NAME, PULSE_TAG_NAME)
+
+  const pulseSource = readFileSync(path.join(LIB_DIR, 'pulse.js'), 'utf8')
+  assert.ok(pulseSource.includes('<confluence-memory scope="global"'), 'the pulse must emit the v0.2.0 tag')
+  const watermarkSource = readFileSync(path.join(LIB_DIR, 'watermark.js'), 'utf8')
+  assert.ok(watermarkSource.includes('confluence-workspace'), 'legacy <confluence-workspace> snapshots must stay parseable')
+})
+
+test('the global store layout is reserved and legacy journals are only scanned, never written', async () => {
+  const { JournalStore } = await import(pathToFileURL(path.join(LIB_DIR, 'store.js')).href)
+  const root = mkdtempSync(path.join(tmpdir(), 'confluence-contract-store-'))
+  try {
+    const store = new JournalStore({ config: { store: { dir: root } } })
+    const journal = await store.openGlobal()
+    assert.equal(journal.wsKey, GLOBAL_SCOPE_KEY)
+    assert.equal(
+      path.relative(root, journal.dir),
+      path.join('workspaces', GLOBAL_SCOPE_KEY),
+      'the global journal must live under workspaces/ws_0000000000000000',
+    )
+    assert.deepEqual(store.legacyWorkspaceMeta(), [], 'a fresh store has no legacy workspaces')
+    assert.deepEqual(store.mergedRecords(), [], 'a fresh store has an empty merged view')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the six tool descriptions use universal wording, not workspace wording', () => {
+  const source = readFileSync(path.join(LIB_DIR, 'tools.js'), 'utf8')
+  assert.doesNotMatch(source, /this workspace/i, 'tool descriptions must not say "this workspace"')
+  assert.doesNotMatch(source, /NO_WORKSPACE/, 'the v0.2.0 tools have no NO_WORKSPACE error path')
+  assert.match(source, /shared memory across sessions/i)
+  assert.match(source, /all earlier sessions on this machine/i, 'recall must cover the whole profile')
+  assert.match(source, /untrusted data/i)
+  for (const name of [
+    'confluence_board',
+    'confluence_post',
+    'confluence_read',
+    'confluence_search',
+    'confluence_reply',
+    'confluence_recall',
+  ]) {
+    assert.match(source, new RegExp(`name: '${name}'`), `missing tool definition ${name}`)
+  }
+  assert.match(source, /through=/, 'board/read results must keep the through= marker')
+})
+
+test('the panel exposes exactly the three global routes and no workspaces route', () => {
+  const source = readFileSync(path.join(LIB_DIR, 'hostui.js'), 'utf8')
+  const matches = [...source.matchAll(/name: '([a-z-]+)', path: `\$\{HOSTUI_PREFIX\}\/([a-z-]+)`/g)]
+  const names = matches.map((match) => match[1])
+  assert.deepEqual(names, PANEL_ROUTES, 'panel routes must be ping, overview and entry')
+  assert.deepEqual(matches.map((match) => match[2]), PANEL_ROUTES, 'each route path must match its name')
+  assert.doesNotMatch(source, /\/workspaces/, 'the v0.1.0 /workspaces route was removed')
+  assert.doesNotMatch(source, /workspaceKey/, 'panel requests must not carry a workspace key')
+})
+
+test('v0.2.0 config removes the workspace opt-out and maps the renamed ledger cap with warnings', async () => {
+  const { DEFAULTS: LIB_DEFAULTS, resolveConfig } = await import(pathToFileURL(path.join(LIB_DIR, 'config.js')).href)
+  assert.equal(LIB_DEFAULTS.ledger.maxSessions, 200)
+  assert.equal(LIB_DEFAULTS.privacy.disabledWorkspaces, undefined, 'the workspace opt-out config key must be gone')
+
+  const deprecated = resolveConfig({
+    privacy: { privateSessions: [], disabledWorkspaces: ['ws_0123456789abcdef'] },
+    ledger: { maxSessionsPerWorkspace: 50 },
+  })
+  assert.ok(
+    deprecated.warnings.includes('CONFIG_DEPRECATED privacy.disabledWorkspaces'),
+    'a stale workspace opt-out must produce an activation warning',
+  )
+  assert.ok(
+    deprecated.warnings.includes('CONFIG_DEPRECATED ledger.maxSessionsPerWorkspace'),
+    'the old ledger cap name must warn',
+  )
+  assert.equal(deprecated.config.ledger.maxSessions, 50, 'the deprecated ledger cap value must be mapped, not dropped')
+  assert.equal(deprecated.config.privacy.disabledWorkspaces, undefined)
+
+  const clean = resolveConfig({ ledger: { maxSessions: 50 } })
+  assert.deepEqual(clean.warnings, [])
+  assert.equal(clean.config.ledger.maxSessions, 50)
 })
 
 test('apply() returns without throwing on a minimal fake ctx', async () => {
@@ -488,13 +621,19 @@ test('production host code stays offline and the client half is a read-only same
   assert.match(client, /inject:\s*\[\s*'slots'\s*,\s*'locale'\s*,\s*'layout'\s*\]/, 'client inject list changed')
   assert.match(client, /name:\s*'sidebar\.panellist'[\s\S]{0,120}id:\s*'confluence'[\s\S]{0,120}order:\s*30/)
   assert.match(client, /name:\s*'main'[\s\S]{0,120}key:\s*'confluence'/)
+  // v0.2.0: global panel, provenance instead of a workspace switcher.
+  assert.match(client, /汇流记忆 \/ Confluence memory/, 'the panel title must be the global memory title')
+  assert.match(client, /'\/overview'?/, 'the panel must call the global overview route')
+  assert.match(client, /'\/entry'?/, 'the panel must call the global entry route')
+  assert.doesNotMatch(client, /\/workspaces/, 'the removed /workspaces route must not be called')
+  assert.doesNotMatch(client, /workspaceKey|workspace_key/, 'panel requests must not carry a workspace key')
 })
 
 // ---------------------------------------------------------------------------
 // repository documentation
 // ---------------------------------------------------------------------------
 
-test('README.md and README.zh-CN.md describe the implemented v0.1.0 state honestly', () => {
+test('README.md and README.zh-CN.md describe the implemented v0.2.0 state honestly', () => {
   const en = path.join(ROOT, 'README.md')
   const zh = path.join(ROOT, 'README.zh-CN.md')
   assert.ok(existsSync(en), 'missing README.md')
@@ -503,13 +642,24 @@ test('README.md and README.zh-CN.md describe the implemented v0.1.0 state honest
   const zhText = readFileSync(zh, 'utf8')
   for (const marker of [
     'Confluence / 汇流',
+    'v0.2.0',
     'v0.1.0',
+    'universal',
     'implemented',
     'Host',
     'panel',
     '256',
+    'ws_0000000000000000',
+    'All sessions',
+    'confluence-memory',
+    'legacy',
+    'profile',
+    'privateSessions',
     'docs/install.md',
     'docs/publishing.md',
+    'docs/upgrade-v0.2.md',
+    'docs/adr/0007-universal-memory-scope.md',
+    'docs/plan/scope-refactor-delta.md',
     'docs/plan/implementation-interfaces.md',
     'docs/plan/implementation-status.md',
     'node --test',
@@ -518,14 +668,16 @@ test('README.md and README.zh-CN.md describe the implemented v0.1.0 state honest
   ]) {
     assert.ok(enText.includes(marker), `README.md is missing required content: ${marker}`)
   }
-  for (const marker of ['汇流', 'v0.1.0', '256', 'docs/install.md', 'node --test', 'MIT']) {
+  for (const marker of ['汇流', 'v0.2.0', '全部会话', '256', 'docs/install.md', 'upgrade-v0.2.md', 'node --test', 'MIT']) {
     assert.ok(zhText.includes(marker), `README.zh-CN.md is missing required content: ${marker}`)
   }
   assert.match(enText.replace(/\s+/g, ' '), /not (been )?(installed|verified|executed)/i, 'README must keep the not-executed claims')
+  assert.match(enText.replace(/\s+/g, ' '), /not been visually verified/i, 'README must keep the panel-rendering honesty')
   assert.doesNotMatch(enText.replace(/\s+/g, ' '), /design-stage scaffold/i, 'README must no longer describe a design-stage scaffold as current state')
+  assert.doesNotMatch(enText, /workspace is the consent boundary/i, 'README must not claim the v0.1.0 privacy boundary')
   for (const [file, text] of [['README.md', enText], ['README.zh-CN.md', zhText]]) {
     const lines = lineCount(path.join(ROOT, file))
-    assert.ok(lines >= 200 && lines <= 430, `${file} must be 200–430 lines (found ${lines})`)
+    assert.ok(lines >= 200 && lines <= 460, `${file} must be 200–460 lines (found ${lines})`)
   }
 })
 
@@ -560,11 +712,35 @@ test('install and publishing docs keep the executed/not-executed honesty', () =>
   assert.ok(existsSync(publishing), 'missing docs/publishing.md')
   const installText = readFileSync(install, 'utf8')
   const publishingText = readFileSync(publishing, 'utf8')
-  for (const marker of ['install_bundle', 'dsh plugin --profile', 'Not executed', 'scratch', 'rollback']) {
+  for (const marker of [
+    'install_bundle',
+    'dsh plugin --profile',
+    'Not executed',
+    'scratch',
+    'rollback',
+    'restart',
+    'disabledWorkspaces',
+    'ledger.maxSessions',
+    'ws_0000000000000000',
+    'confluence-memory',
+  ]) {
     assert.ok(installText.toLowerCase().includes(marker.toLowerCase()), `install.md is missing: ${marker}`)
   }
-  for (const marker of ['npm pack', 'version', 'checksum', 'nothing was published', 'GitHub']) {
+  for (const marker of ['npm pack', 'version', 'checksum', 'nothing was published', 'GitHub', '0.2.0']) {
     assert.ok(publishingText.toLowerCase().includes(marker.toLowerCase()), `publishing.md is missing: ${marker}`)
+  }
+  const upgrade = path.join(ROOT, 'docs', 'upgrade-v0.2.md')
+  assert.ok(existsSync(upgrade), 'missing docs/upgrade-v0.2.md')
+  const upgradeText = readFileSync(upgrade, 'utf8')
+  for (const marker of [
+    'privacy.disabledWorkspaces',
+    'ledger.maxSessions',
+    'CONFIG_DEPRECATED',
+    'Restart',
+    'Rollback',
+    'read-only',
+  ]) {
+    assert.ok(upgradeText.toLowerCase().includes(marker.toLowerCase()), `upgrade-v0.2.md is missing: ${marker}`)
   }
 })
 
@@ -577,7 +753,7 @@ test('the shipped runtime surface is exactly the implemented Host modules, clien
     .filter((name) => name.endsWith('.js'))
     .sort()
   assert.deepEqual(actualLib, LIB_MODULES.slice().sort(), 'lib/ module set changed without a packaging update')
-  assert.equal(LIB_MODULES.length, 15, 'the v0.1.0 Host has exactly 14 lib modules')
+  assert.equal(LIB_MODULES.length, 15, 'the v0.2.0 Host has exactly 15 lib modules')
   assert.ok((PACKAGE_JSON.files ?? []).includes('lib/*.js'), 'files must ship lib/*.js')
   for (const relPath of EXPECTED_FILES) {
     assert.ok(existsSync(path.join(ROOT, relPath)), `missing shipped file ${relPath}`)

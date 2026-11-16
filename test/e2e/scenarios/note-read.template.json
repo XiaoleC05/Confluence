@@ -1,0 +1,28 @@
+{
+  "//": "TEMPLATE — scripts/e2e-dsh.ps1 substitutes {{NOTE_ID}} with the board note id the writer session published (read from the scratch global journal) and writes the result to <run>/scenario-note-reader.json. Reader session D (workspace B, a different directory from the writer): exactly ONE tool call — confluence_read — then a text answer. The `Body: ` matcher is only satisfiable by a successful full-note read; a failed read falls through to the hasToolResult fallback, so a product bug fails the run instead of looping.",
+  "default": { "text": "MOCK_FALLBACK: unexpected request shape; ending the turn." },
+  "responses": [
+    {
+      "when": { "systemIncludes": "concise title" },
+      "text": "Mock E2E note reader session"
+    },
+    {
+      "when": { "messagesIncludes": "Body: " },
+      "text": "Cross-directory note read confirmed."
+    },
+    {
+      "when": { "hasToolResult": true },
+      "text": "MOCK_FALLBACK: the note read did not return a body; ending the turn."
+    },
+    {
+      "when": { "hasToolResult": false },
+      "toolUse": {
+        "name": "confluence_read",
+        "input": { "ref": "{{NOTE_ID}}" }
+      }
+    },
+    {
+      "text": "MOCK_FALLBACK: unexpected request shape; ending the turn."
+    }
+  ]
+}

@@ -1,19 +1,21 @@
-# Confluence / 汇流 — bundle patch (design-stage scaffold)
+# Confluence / 汇流 — bundle patch (v0.2.0 universal memory)
 #
 # Installing this bundle inserts exactly one Loader row, `confluence`, whose
 # `config` is the complete v1 default configuration. The row mounts the plain
-# ESM host plugin in ./index.js.
+# ESM host plugin in ./index.js (six tools, one passive pulse, read-only panel
+# routes, opt-in export CLI) and, when DSH exposes a Web client, the sidebar/
+# panel client in ./client.js.
 #
-# At design stage that plugin only validates configuration and logs exactly one
-# activation warning; it registers no tools, no prompt context, no routes and no
-# UI. Installing this bundle has no user-visible effect yet (see README.md
-# "Status" and docs/install.md).
+# v0.2.0 scope (ADR-0007): ONE universal profile-wide shared memory for every
+# session, regardless of working directory. The workspace is provenance only;
+# there is no per-workspace isolation switch. Legacy v0.1.0 per-workspace
+# journals stay on disk and are merged read-only into every view.
 #
 # Binding design:
-#   docs/adr/0001-confluence-architecture.md  §2 architecture, §10 this config
+#   docs/adr/0007-universal-memory-scope.md   v0.2.0 scope decision
+#   docs/adr/0001-confluence-architecture.md  architecture, config family
 #   docs/design/config.md                     configuration contract
-#   docs/design/architecture.md               component boundaries (M1+)
-#   docs/plan/execution-plan.md               milestones (M1 core starts here)
+#   docs/plan/scope-refactor-delta.md         binding interface delta
 #
 # A user override in the profile's own cordis.patch.yml replaces this complete
 # `config` object rather than deep-merging it. Copy the whole block and change
@@ -22,9 +24,8 @@
     - id: confluence
       name: dsh-confluence
       config:
-        # Master switch. false keeps the row mounted but makes every later
-        # Confluence feature a no-op (M1+). At design stage it is reported in
-        # the single activation warning.
+        # Master switch. false keeps the row mounted but makes every Confluence
+        # feature a no-op.
         enabled: true
 
         # Store: profile-local, append-only JSONL journals (ADR §6).
@@ -36,8 +37,8 @@
           dir: ''
           # Journal records older than this become eligible for M4 compaction.
           retentionDays: 90
-          # Hard per-workspace cap enforced at the read/write boundary (v1 has
-          # no compaction until M4, so this bounds growth).
+          # Hard cap on visible shared-memory entries enforced at the write boundary.
+          # (The historical config key name is kept for compatibility.)
           maxEntriesPerWorkspace: 2000
           # Maximum serialized size of one board note body, in bytes.
           maxBodyBytes: 8192
@@ -47,7 +48,7 @@
           # Best-effort fs.watch acceleration (debounced, try/catch wrapped).
           watch: true
 
-        # Pulse: the passive, byte-stable workspace digest injected through one
+        # Pulse: the passive, byte-stable universal shared-memory digest injected through one
         # global systemPrompt.context contribution (ADR §8).
         pulse:
           enabled: true
@@ -58,18 +59,19 @@
           # Hard character cap for the rendered pulse (200–320 token target).
           maxChars: 1400
 
-        # Ledger: metadata-only, live-first session awareness (ADR §9).
+        # Ledger: metadata-only, live-first session awareness across the profile (ADR-0007).
         ledger:
           enabled: true
           # Distinct workspace-relative paths recorded per session.
           maxFilesPerSession: 8
-          # Ledger rows retained per workspace in the journal.
-          maxSessionsPerWorkspace: 200
+          # Session-ledger rows retained in the global journal.
+          maxSessions: 200
           # File hints are deliberately never rendered in the pulse (privacy).
           fileHintsInPulse: false
 
-        # Recall: explicit, read-only, literal search over same-workspace
-        # session logs through ctx.sessionQuery exact reads (ADR §9).
+        # Recall: explicit, read-only, literal search over ALL earlier sessions
+        # in the profile through ctx.sessionQuery exact reads (ADR-0007 §2.4;
+        # workspace directories are provenance only, not a filter).
         recall:
           enabled: true
           # Prior sessions searched per call.
@@ -79,8 +81,9 @@
           # Cooperative timeout for one recall call.
           timeoutMs: 5000
 
-        # Privacy: the workspace is the consent boundary; these are best-effort
-        # user controls, not a sandbox (ADR §11).
+        # Privacy: the DSH profile/machine is the shared-memory boundary
+        # (single-user local; ADR-0007). These are best-effort user controls,
+        # not a sandbox (ADR §11).
         privacy:
           # Redact API keys, tokens, private keys and password-like values.
           redact: true
@@ -90,23 +93,23 @@
           denyPathPatterns:
             - '**/.env*'
             - '**/*.pem'
-          # Session ids that never contribute ledger rows or pulse text.
+          # Session ids that never contribute ledger rows, pulse text or tools.
           privateSessions: []
-          # Canonical workspace keys or paths that stay entirely opt-out.
-          disabledWorkspaces: []
           # Custom redaction regex sources applied after the built-in secret
           # patterns (design/config.md §2.4; addition beyond ADR §10). Built-ins
           # cannot be disabled. Invalid patterns are dropped with a warning.
           redactPatterns: []
 
-        # UI: read-only panel (M3). No effect at design stage.
+        # UI: read-only Web panel (sidebar list + main timeline, provenance
+        # chips, search/kind filter, live peers). No writes from the browser.
         ui:
           enabled: true
           # Panel refresh interval while visible.
           pollMs: 5000
 
         # Export: opt-in, explicit user action, deterministic and redacted.
-        # Writes memories.v1.jsonl under <workspace>/.confluence/export/ (M4).
+        # v0.2.0 CLI writes the universal memory export under
+        # /storages/confluence-exports/<stamp>/ by default (scripts/export-memories.mjs).
         export:
           enabled: false
           dir: '.confluence/export'

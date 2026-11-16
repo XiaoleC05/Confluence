@@ -1,29 +1,26 @@
-// WP3c tests — recall enumeration/authority/caps/deadline/redaction and readRef expansion.
-// Contract: implementation-interfaces.md §10 + Lead WP3 addendum; ledger-recall.md §5–§6, §8 R1–R10.
+// WP3c tests — universal recall: enumeration across the whole profile, caller/private exclusion,
+// caps/ordering/deadline/partial behaviour, redacted excerpts, source session titles, readRef.
+// Contract: docs/adr/0007-universal-memory-scope.md §2.4; docs/plan/scope-refactor-delta.md §5;
+// docs/design/ledger-recall.md §5–§6, §8 R1–R10.
 import assert from 'node:assert/strict'
-import path from 'node:path'
 import { test } from 'node:test'
-import { RecallService, parseSessionRef, roundRobin, workspaceKeyFor } from '../lib/recall.js'
+import { RecallService, parseSessionRef, roundRobin } from '../lib/recall.js'
 
 const CALLER_ID = 'session-caller'
+const CWD_A = process.platform === 'win32' ? 'D:\\WS-A' : '/ws-a'
+const CWD_B = process.platform === 'win32' ? 'D:\\WS-B' : '/ws-b'
+const CWD_C = process.platform === 'win32' ? 'D:\\WS-C' : '/ws-c'
 
-/** Deterministic canonicalizer: resolve + win32 fold, no filesystem I/O (injected seam). */
-function canonical(pathValue) {
-  let value = path.resolve(pathValue).replace(/[\\/]+$/, '')
-  if (process.platform === 'win32') value = value.toLowerCase()
-  return value
-}
-
-const CALLER_CWD = process.platform === 'win32' ? 'D:\\WS' : '/ws'
-const OTHER_CWD = process.platform === 'win32' ? 'D:\\OTHER' : '/other'
-const CALLER_KEY = workspaceKeyFor(canonical(CALLER_CWD))
-
-function agentFor(cwd = CALLER_CWD, id = CALLER_ID) {
-  return { id, session: { id, header: { id, cwd } } }
+/** The agent shape only needs identity now: recall never derives a workspace from cwd. */
+function agentFor(id = CALLER_ID, cwd) {
+  const header = cwd === undefined ? { id } : { id, cwd }
+  return { id, session: { id, header } }
 }
 
 function record(id, cwd, createdAt = '2026-11-13T01:00:00.000Z') {
-  return { header: { id, cwd, createdAt }, live: false, persisted: true }
+  const header = { id, createdAt }
+  if (cwd !== undefined) header.cwd = cwd
+  return { header, live: false, persisted: true }
 }
 
 function doc(sessionId, seq, text, type = 'assistant/message') {
@@ -42,11 +39,13 @@ function fakeRedactor() {
 }
 
 /**
- * Fake `ctx.sessionQuery`:
+ * Fake `ctx.sessionQuery`. `readEvent` throws for an unknown session id, like the real service
+ * does for a ref that cannot be read (readRef maps that to NOT_FOUND).
  * @param {object} options { records, eventsById, readEventsById, titles, listDelayMs }
  */
 function makeSessionQuery(options = {}) {
   const calls = { listSessions: 0, filterEvents: [], readEvent: [] }
+  const knownReads = options.readEventsById ?? {}
   const sq = {
     calls,
     async listSessions() {
@@ -63,9 +62,10 @@ function makeSessionQuery(options = {}) {
     },
     async readEvent(request) {
       calls.readEvent.push(request)
-      const value = options.readEventsById?.[request.sessionId]
+      if (!(request.sessionId in knownReads)) throw new Error(`unknown session ${request.sessionId}`)
+      const value = knownReads[request.sessionId]
       if (typeof value === 'function') return value(request)
-      return value ?? { events: [] }
+      return value
     },
     async readTitleSnapshots(ids) {
       return ids.map((id) => ({ id, title: options.titles?.[id] ?? `Title ${id}` }))
@@ -84,7 +84,7 @@ function createRecall(options = {}) {
     deps: {
       sessionQuery: options.sessionQuery,
       redactor: options.redactor ?? fakeRedactor(),
-      canonicalizeDir: canonical,
+      ...options.deps,
     },
   })
 }
@@ -121,44 +121,77 @@ test('CON-R8 listSessions failure maps to RECALL_UNAVAILABLE with cause', async 
 })
 
 // ---------------------------------------------------------------------------
-// authority / canonical workspace / caller exclusion (addendum: header.cwd only)
+// headline: cross-workspace recall + caller/private exclusion
 // ---------------------------------------------------------------------------
 
-test('CON-R1/R2 workspace authority from header.cwd: case variants included, others excluded, caller dropped', async () => {
-  const caseVariant = process.platform === 'win32' ? 'd:\\ws\\' : '/ws/'
+test('CON-X2 recall finds text from a session with a DIFFERENT cwd (universal memory)', async () => {
   const sq = makeSessionQuery({
     records: [
-      record(CALLER_ID, CALLER_CWD),
-      record('session-same-case', caseVariant),
-      record('session-other', OTHER_CWD),
-      { header: { id: 'session-no-cwd' } },
-      record('session-no-header-cwd', undefined),
-      record('session-same-slash', CALLER_CWD + (process.platform === 'win32' ? '\\' : '/')),
+      record(CALLER_ID, CWD_A),
+      record('session-other-workspace', CWD_B),
+      record('session-no-cwd'),
+      record('session-private', CWD_C),
+      record('session-third', CWD_C),
     ],
     eventsById: {
-      'session-same-case': [doc('session-same-case', 10, 'fixture timeout in auth tests')],
-      'session-other': [doc('session-other', 11, 'fixture timeout should not match')],
-      'session-same-slash': [doc('session-same-slash', 12, 'fixture timeout again')],
+      'session-other-workspace': [doc('session-other-workspace', 11, 'the fixture timeout fix lives here')],
+      'session-no-cwd': [doc('session-no-cwd', 12, 'timeout notes without a directory')],
+      'session-private': [doc('session-private', 13, 'timeout secret')],
+      'session-third': [doc('session-third', 14, 'another timeout mention')],
+      'session-caller': [doc('session-caller', 15, 'caller timeout text')],
     },
   })
-  const recall = createRecall({ sessionQuery: sq })
-  const result = await recall.recall({ agent: agentFor(), query: 'fixture timeout' })
-  const searchedIds = sq.calls.filterEvents.map((call) => call.sessionId).sort()
-  assert.deepEqual(searchedIds, ['session-same-case', 'session-same-slash'])
-  assert.equal(result.hits.some((hit) => hit.sessionId === CALLER_ID), false, 'caller excluded')
-  assert.equal(result.hits.some((hit) => hit.sessionId === 'session-other'), false)
-  assert.equal(result.eligible_sessions >= result.sessions_searched, true)
+  const recall = createRecall({
+    sessionQuery: sq,
+    config: { privacy: { privateSessions: ['session-private'] } },
+  })
+  // The caller is in CWD_A; the matching session lives in CWD_B and another has no cwd at all.
+  const result = await recall.recall({ agent: agentFor(CALLER_ID, CWD_A), query: 'fixture timeout' })
+  const searchedIds = sq.calls.filterEvents.map((call) => call.sessionId)
+  assert.equal(searchedIds.includes('session-other-workspace'), true, 'different cwd is searched')
+  assert.equal(searchedIds.includes('session-no-cwd'), true, 'a session without cwd is searched')
+  assert.equal(searchedIds.includes(CALLER_ID), false, 'caller dropped')
+  assert.equal(searchedIds.includes('session-private'), false, 'private target excluded')
+  assert.deepEqual(
+    result.hits.map((hit) => hit.sessionId).sort(),
+    ['session-no-cwd', 'session-other-workspace', 'session-third'],
+    'literal matches from every eligible session are returned regardless of cwd',
+  )
+  const otherWorkspaceHit = result.hits.find((hit) => hit.sessionId === 'session-other-workspace')
+  assert.match(otherWorkspaceHit.excerpt, /fixture timeout/)
+  assert.equal(result.sessions_searched, 3, 'three eligible sessions were scanned (≤3 cap)')
+  assert.equal(result.eligible_sessions, 3)
 })
 
-test('UT-RECALL-01 no header.cwd => NO_WORKSPACE (never trusts model arguments)', async () => {
-  const sq = makeSessionQuery({ records: [] })
+test('UT-RECALL-01 caller identity works without any cwd and no workspace key is accepted', async () => {
+  const sq = makeSessionQuery({
+    records: [record('session-a'), record('session-b', CWD_B)],
+    eventsById: { 'session-b': [doc('session-b', 1, 'needle in b')] },
+  })
   const recall = createRecall({ sessionQuery: sq })
-  const agent = { id: CALLER_ID, session: { header: {} } }
-  await assert.rejects(() => recall.recall({ agent, query: 'fixture' }), (error) => error.code === 'NO_WORKSPACE')
-  await assert.rejects(
-    () => recall.recall({ agent, query: 'fixture', workspaceKey: OTHER_CWD }),
-    (error) => error.code === 'NO_WORKSPACE',
+  // No header.cwd anywhere, and a stray legacy workspaceKey argument must not matter.
+  const agent = { id: CALLER_ID, session: { id: CALLER_ID, header: {} }, workspaceKey: CWD_A }
+  const result = await recall.recall({ agent, query: 'needle', workspaceKey: CWD_A })
+  assert.equal(result.hits.length, 1)
+  assert.equal(result.hits[0].sessionId, 'session-b')
+  assert.deepEqual(
+    sq.calls.filterEvents.map((call) => call.sessionId).sort(),
+    ['session-a', 'session-b'],
+    'both profile sessions are scanned even without any cwd',
   )
+})
+
+test('UT-RECALL-02 private caller is refused', async () => {
+  const sq = makeSessionQuery({ records: [record('session-a')] })
+  const recall = createRecall({
+    sessionQuery: sq,
+    config: { privacy: { privateSessions: [CALLER_ID] } },
+  })
+  await assert.rejects(() => recall.recall({ agent: agentFor(), query: 'needle' }), (error) => {
+    assert.equal(error.code, 'RECALL_UNAVAILABLE')
+    return true
+  })
+  assert.equal(sq.calls.listSessions, 0, 'a private caller never enumerates anything')
 })
 
 // ---------------------------------------------------------------------------
@@ -167,7 +200,8 @@ test('UT-RECALL-01 no header.cwd => NO_WORKSPACE (never trusts model arguments)'
 
 test('CON-R4 caps: ≤3 sessions loaded, ≤5 hits round-robin, deterministic order', async () => {
   const records = ['session-a', 'session-b', 'session-c', 'session-d', 'session-e'].map(
-    (id, index) => record(id, CALLER_CWD, new Date(1_700_000_000_000 + (5 - index) * 1000).toISOString()),
+    (id, index) =>
+      record(id, [CWD_A, CWD_B, CWD_C][index % 3], new Date(1_700_000_000_000 + (5 - index) * 1000).toISOString()),
   )
   const eventsById = {
     'session-a': Array.from({ length: 10 }, (_, index) => doc('session-a', index + 1, `a${index} needle`)),
@@ -178,7 +212,7 @@ test('CON-R4 caps: ≤3 sessions loaded, ≤5 hits round-robin, deterministic or
   }
   const sq = makeSessionQuery({ records, eventsById })
   const recall = createRecall({ sessionQuery: sq })
-  const result = await recall.recall({ agent: agentFor(), query: 'needle', limit: 5 })
+  const result = await recall.recall({ agent: agentFor(CALLER_ID, CWD_A), query: 'needle', limit: 5 })
   assert.equal(sq.calls.filterEvents.length, 3, 'only three sessions are loaded')
   assert.equal(result.hits.length, 5)
   assert.equal(result.sessions_searched, 3)
@@ -195,15 +229,15 @@ test('CON-R4 caps: ≤3 sessions loaded, ≤5 hits round-robin, deterministic or
     ],
   )
   assert.equal(result.truncated, true)
-  assert.equal(result.hits[0].session_id, 'session:session-a'.replace('session:', ''))
+  assert.equal(result.hits[0].session_id, 'session-a')
 })
 
-test('UT-RECALL-02 recency order + deterministic id tie-break from header.createdAt', async () => {
+test('UT-RECALL-03 recency order + deterministic id tie-break from header.createdAt', async () => {
   const records = [
-    record('session-old', CALLER_CWD, '2026-11-13T00:00:00.000Z'),
-    record('session-new', CALLER_CWD, '2026-11-13T02:00:00.000Z'),
-    record('session-tie-b', CALLER_CWD, '2026-11-13T01:00:00.000Z'),
-    record('session-tie-a', CALLER_CWD, '2026-11-13T01:00:00.000Z'),
+    record('session-old', CWD_A, '2026-11-13T00:00:00.000Z'),
+    record('session-new', CWD_B, '2026-11-13T02:00:00.000Z'),
+    record('session-tie-b', CWD_C, '2026-11-13T01:00:00.000Z'),
+    record('session-tie-a', undefined, '2026-11-13T01:00:00.000Z'),
   ]
   const sq = makeSessionQuery({
     records,
@@ -222,14 +256,28 @@ test('UT-RECALL-02 recency order + deterministic id tie-break from header.create
   )
 })
 
+test('UT-RECALL-03b optional ledger view supplies recency', async () => {
+  const sq = makeSessionQuery({
+    records: [record('session-old', CWD_A, '2026-11-13T05:00:00.000Z'), record('session-active', CWD_B)],
+    eventsById: { 'session-active': [doc('session-active', 1, 'needle active')] },
+  })
+  const ledgerRows = new Map([['session-active', { lastActivityTs: '2026-11-13T06:00:00.000Z' }]])
+  const recall = createRecall({
+    sessionQuery: sq,
+    deps: { ledger: { ledger: () => ledgerRows } },
+  })
+  const result = await recall.recall({ agent: agentFor(), query: 'needle' })
+  assert.equal(result.hits[0].sessionId, 'session-active', 'ledger recency wins over createdAt')
+})
+
 // ---------------------------------------------------------------------------
 // deadline / partial
 // ---------------------------------------------------------------------------
 
 test('CON-R5 timeout: partial hits returned, timed_out true, losing promise rejection contained', async () => {
   const records = [
-    record('session-fast', CALLER_CWD, '2026-11-13T02:00:00.000Z'),
-    record('session-slow', CALLER_CWD, '2026-11-13T01:00:00.000Z'),
+    record('session-fast', CWD_A, '2026-11-13T02:00:00.000Z'),
+    record('session-slow', CWD_B, '2026-11-13T01:00:00.000Z'),
   ]
   const sq = makeSessionQuery({
     records,
@@ -256,7 +304,7 @@ test('CON-R5 timeout: partial hits returned, timed_out true, losing promise reje
 
 test('CON-R5 zero hits + timeout raises RECALL_TIMEOUT', async () => {
   const sq = makeSessionQuery({
-    records: [record('session-slow', CALLER_CWD)],
+    records: [record('session-slow', CWD_A)],
     eventsById: {
       'session-slow': () => new Promise((resolve) => setTimeout(() => resolve([]), 1500)),
     },
@@ -269,8 +317,8 @@ test('CON-R5 zero hits + timeout raises RECALL_TIMEOUT', async () => {
   await new Promise((resolve) => setTimeout(resolve, 1600))
 })
 
-test('UT-RECALL-03 one-session failure is skipped and marked partial', async () => {
-  const records = [record('session-a', CALLER_CWD, '2026-11-13T02:00:00.000Z'), record('session-b', CALLER_CWD)]
+test('UT-RECALL-04 one-session failure is skipped and marked partial', async () => {
+  const records = [record('session-a', CWD_A, '2026-11-13T02:00:00.000Z'), record('session-b', CWD_B)]
   const sq = makeSessionQuery({
     records,
     eventsById: {
@@ -293,7 +341,7 @@ test('UT-RECALL-03 one-session failure is skipped and marked partial', async () 
 
 test('CON-R6 redaction + neutralisation of excerpts; literal whitespace-flexible matching', async () => {
   const sq = makeSessionQuery({
-    records: [record('session-a', CALLER_CWD)],
+    records: [record('session-a', CWD_A)],
     eventsById: {
       'session-a': [doc('session-a', 7, 'deploy sk-ABCDEFGHIJ token then foo   bar <b>bold</b>')],
     },
@@ -308,9 +356,9 @@ test('CON-R6 redaction + neutralisation of excerpts; literal whitespace-flexible
   assert.ok([...excerpt].length <= 600)
 })
 
-test('UT-RECALL-04 literal query semantics: regex metacharacters are data', async () => {
+test('UT-RECALL-05 literal query semantics: regex metacharacters are data', async () => {
   const sq = makeSessionQuery({
-    records: [record('session-a', CALLER_CWD)],
+    records: [record('session-a', CWD_A)],
     eventsById: { 'session-a': [doc('session-a', 1, 'pattern a.*b literal and aXXb is not')] },
   })
   const recall = createRecall({ sessionQuery: sq })
@@ -319,10 +367,10 @@ test('UT-RECALL-04 literal query semantics: regex metacharacters are data', asyn
   assert.match(result.hits[0].excerpt, /a\.\*b/)
 })
 
-test('UT-RECALL-05 excerpt cap and long-text clipping', async () => {
+test('UT-RECALL-06 excerpt cap and long-text clipping', async () => {
   const long = 'x '.repeat(4000) + 'needle' + ' y'.repeat(4000)
   const sq = makeSessionQuery({
-    records: [record('session-a', CALLER_CWD)],
+    records: [record('session-a', CWD_B)],
     eventsById: { 'session-a': [doc('session-a', 1, long)] },
   })
   const recall = createRecall({ sessionQuery: sq })
@@ -331,7 +379,7 @@ test('UT-RECALL-05 excerpt cap and long-text clipping', async () => {
   assert.match(result.hits[0].excerpt, /needle/)
 })
 
-test('UT-RECALL-06 query validation and hit caps', async () => {
+test('UT-RECALL-07 query validation and hit caps', async () => {
   const sq = makeSessionQuery({ records: [] })
   const recall = createRecall({ sessionQuery: sq })
   await assert.rejects(() => recall.recall({ agent: agentFor(), query: 'x' }), (error) => error.code === 'BAD_ARGUMENT')
@@ -344,9 +392,9 @@ test('UT-RECALL-06 query validation and hit caps', async () => {
   assert.equal(result.hits.length, 0)
 })
 
-test('UT-RECALL-07 titles joined for hits', async () => {
+test('UT-RECALL-08 hits include the source session title', async () => {
   const sq = makeSessionQuery({
-    records: [record('session-a', CALLER_CWD)],
+    records: [record('session-a', CWD_B)],
     eventsById: { 'session-a': [doc('session-a', 3, 'needle')] },
     titles: { 'session-a': 'Auth branch work' },
   })
@@ -388,14 +436,14 @@ function readWindowEvents() {
   }
 }
 
-test('CON-R7 ref roundtrip: expands same-workspace ref, roles mapped, reasoning absent, redacted', async () => {
+test('CON-R7 ref roundtrip: expands a ref from a DIFFERENT cwd, roles mapped, reasoning absent, redacted', async () => {
   const sq = makeSessionQuery({
-    records: [record(CALLER_ID, CALLER_CWD), record('session-target', CALLER_CWD)],
+    records: [record(CALLER_ID, CWD_A), record('session-target', CWD_B)],
     readEventsById: { 'session-target': readWindowEvents() },
     titles: { 'session-target': 'Auth branch work' },
   })
   const recall = createRecall({ sessionQuery: sq })
-  const result = await recall.readRef({ agent: agentFor(), ref: 'session:session-target:412' })
+  const result = await recall.readRef({ agent: agentFor(CALLER_ID, CWD_A), ref: 'session:session-target:412' })
   assert.equal(result.sessionId, 'session-target')
   assert.equal(result.title, 'Auth branch work')
   assert.equal(result.events.length, 3)
@@ -407,16 +455,13 @@ test('CON-R7 ref roundtrip: expands same-workspace ref, roles mapped, reasoning 
   assert.equal(JSON.stringify(result).includes('SECRET_REASONING_TEXT'), false)
   assert.equal(JSON.stringify(result).includes('sk-ABCDEFGHIJ'), false, 'read window redacted')
   assert.equal(result.truncated, false)
+  assert.equal(sq.calls.listSessions, 0, 'authority is session readability, not a workspace lookup')
 })
 
-test('CON-R7 readRef authority: malformed, foreign, unknown, private targets behave safely', async () => {
+test('CON-R7 readRef authority: malformed, unknown and private targets behave safely', async () => {
   const sq = makeSessionQuery({
-    records: [
-      record(CALLER_ID, CALLER_CWD),
-      record('session-foreign', OTHER_CWD),
-      record('session-private', CALLER_CWD),
-    ],
-    readEventsById: { 'session-foreign': readWindowEvents(), 'session-private': readWindowEvents() },
+    records: [record(CALLER_ID, CWD_A), record('session-private', CWD_B)],
+    readEventsById: { 'session-private': readWindowEvents() },
   })
   const recall = createRecall({
     sessionQuery: sq,
@@ -427,10 +472,6 @@ test('CON-R7 readRef authority: malformed, foreign, unknown, private targets beh
     (error) => error.code === 'INVALID_REF',
   )
   await assert.rejects(
-    () => recall.readRef({ agent: agentFor(), ref: 'session:session-foreign:5' }),
-    (error) => error.code === 'NOT_FOUND',
-  )
-  await assert.rejects(
     () => recall.readRef({ agent: agentFor(), ref: 'session:session-private:5' }),
     (error) => error.code === 'NOT_FOUND',
   )
@@ -438,17 +479,13 @@ test('CON-R7 readRef authority: malformed, foreign, unknown, private targets beh
     () => recall.readRef({ agent: agentFor(), ref: 'session:session-missing:5' }),
     (error) => error.code === 'NOT_FOUND',
   )
-  assert.equal(sq.calls.readEvent.length, 0, 'no log read happens for unauthorized refs')
+  assert.equal(sq.calls.readEvent.length, 1, 'only the missing-target probe reached readEvent; private never did')
 })
 
 test('CON-R7 readRef text cap: bounded total, truncated flag; missing window => NOT_FOUND', async () => {
   const big = 'x'.repeat(2000)
   const sq = makeSessionQuery({
-    records: [
-      record(CALLER_ID, CALLER_CWD),
-      record('session-big', CALLER_CWD),
-      record('session-empty', CALLER_CWD),
-    ],
+    records: [record(CALLER_ID, CWD_A), record('session-big', CWD_B), record('session-empty', CWD_C)],
     readEventsById: {
       'session-big': () => ({
         events: [
@@ -475,7 +512,7 @@ test('parseSessionRef grammar and roundRobin helper', () => {
   assert.deepEqual(parseSessionRef('session:session-abc:412'), { sessionId: 'session-abc', seq: 412 })
   assert.equal(parseSessionRef('session::1'), null)
   assert.equal(parseSessionRef('session:abc'), null)
-  assert.equal(parseSessionRef('cnf_01JBQ8Z4K1H9T2R6N4X7C0W8FD'), null)
+  assert.equal(parseSessionRef('cnf_01JBQZ4K1H9T2R6N4X7C0W8FD'), null)
   const ring = roundRobin(
     [
       { sessionId: 'a', docs: [doc('a', 2, 'two'), doc('a', 1, 'one')] },
@@ -487,18 +524,4 @@ test('parseSessionRef grammar and roundRobin helper', () => {
     ring.map((item) => `${item.sessionId}:${item.seq}`),
     ['a:1', 'b:1', 'a:2'],
   )
-})
-
-test('UT-RECALL-08 caller workspace key matches the canonical header.cwd derivation', async () => {
-  let seen = null
-  const sq = makeSessionQuery({ records: [] })
-  const originalFilter = sq.filterEvents
-  sq.filterEvents = async (id, filters) => {
-    seen = { id, filters }
-    return originalFilter(id, filters)
-  }
-  const recall = createRecall({ sessionQuery: sq })
-  await recall.recall({ agent: agentFor(), query: 'needle' })
-  assert.equal(CALLER_KEY, workspaceKeyFor(canonical(CALLER_CWD)))
-  assert.equal(seen, null, 'no session is scanned for a single-session workspace')
 })

@@ -1,8 +1,8 @@
 {
   "name": "dsh-confluence",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Fully-offline DeepSeek Harness plugin that shares workspace memory between sessions in the same project (Confluence / 汇流): a passive pulse, a durable shared board, and on-demand recall.",
+  "description": "Fully-offline DeepSeek Harness plugin that gives every session one universal shared memory (Confluence / 汇流): a passive pulse, a durable shared board, on-demand recall, a read-only panel and an opt-in export — independent of the working directory.",
   "author": "XiaoleC05",
   "repository": {
     "type": "git",
@@ -42,7 +42,7 @@
     "dsh-plugin",
     "cordis",
     "confluence",
-    "workspace-memory",
+    "universal-memory",
     "offline"
   ],
   "license": "MIT",

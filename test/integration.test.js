@@ -1,32 +1,33 @@
-// Confluence / 汇流 — end-to-end wiring test (Lead-owned).
+// Confluence / 汇流 — end-to-end wiring test (Lead-owned, v0.2.0 universal scope).
 //
 // Drives the real plugin modules through a fake Cordis context + fake host
 // services (tools, systemPrompt, webServer, agents, sessionQuery) with the real
-// filesystem under a temp directory. This proves the wiring contract that unit
-// tests cover only piecewise:
+// filesystem under a temp directory. The v0.2.0 acceptance is cross-workspace:
+// two sessions with DIFFERENT working directories share one profile-wide memory.
 //
-//   applyWithDeps -> tools.register (six definitions)
-//                 -> systemPrompt.context (one pulse registration)
-//                 -> webServer.register (four read-only routes)
-//   confluence_post (session A) writes a journal entry;
-//   confluence_board (session B) sees it and returns a through= cursor;
-//   the pulse text for session B lists A's note;
-//   a second post is visible through the panel overview payload.
+//   applyWithDeps -> six tools + one pulse context + three panel routes
+//   session A (cwd A) posts; session B (cwd B) sees it in board/pulse
+//   legacy v1 per-workspace journals are merged read-only with provenance labels
+//   the global journal lives at workspaces/ws_0000000000000000/
 //
 // Offline: no network, no DSH packages, Node builtins only.
 
 import assert from 'node:assert/strict'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
 
 import { applyWithDeps } from '../index.js'
+import { GLOBAL_SCOPE_KEY, JournalStore } from '../lib/store.js'
+import { resolveConfig } from '../lib/config.js'
+import { createOriginResolver } from '../lib/workspace.js'
 
-const WORKSPACE_KEY = `ws_${'a'.repeat(16)}`
+const LEGACY_WS_KEY = `ws_${'1'.repeat(16)}`
 
-/** @type {{dir: string, project: string, store: string}} */
-const paths = { dir: '', project: '', store: '' }
+/** @type {{dir: string, projectA: string, projectB: string, legacyDir: string, store: string}} */
+const paths = { dir: '', projectA: '', projectB: '', legacyDir: '', store: '' }
 
 /** @type {object | null} */
 let services = null
@@ -70,13 +71,13 @@ function createFakeCtx() {
       },
     },
     agents: { list: () => [] },
-    workingDirectory: { get: () => paths.project },
+    workingDirectory: { get: () => undefined },
     sessionQuery: {
       async listSessions() {
         return []
       },
-      async readTitle() {
-        return { title: 'fixture session' }
+      async readTitle(sessionId) {
+        return { title: `title:${sessionId}` }
       },
       async filterEvents() {
         return []
@@ -85,15 +86,13 @@ function createFakeCtx() {
         return { events: [] }
       },
     },
-    sessionTitle: { get: () => 'fixture session' },
+    sessionTitle: { get: () => undefined },
   }
 
   const ctx = {
     get(name) {
       return host[name]
     },
-    // A real Cordis context exposes injected services as properties as well as
-    // through get(); modules use both forms.
     tools: host.tools,
     systemPrompt: host.systemPrompt,
     webServer: host.webServer,
@@ -111,28 +110,27 @@ function createFakeCtx() {
         if (index >= 0) current.splice(index, 1)
       }
     },
-    effect(callback, label) {
+    effect(callback) {
       const disposer = callback()
-      const wrapped = () => {
+      captured.disposers.push(() => {
         try {
           if (typeof disposer === 'function') disposer()
         } catch {
           // ignore
         }
-      }
-      captured.disposers.push(wrapped)
-      return wrapped
+      })
+      return () => {}
     },
     logger: { debug() {}, info() {}, warn() {}, error() {} },
   }
   return { ctx, host }
 }
 
-/** @param {string} id @returns {object} */
-function fakeSession(id) {
+/** @param {string} id @param {string} cwd @returns {object} */
+function fakeSession(id, cwd) {
   return {
     id,
-    header: { id, cwd: paths.project, isSeeded: false },
+    header: { id, cwd, isSeeded: false },
     snapshotEvents() {
       return []
     },
@@ -140,9 +138,9 @@ function fakeSession(id) {
   }
 }
 
-/** @param {string} id @returns {object} */
-function fakeAgent(id) {
-  return { id, session: fakeSession(id), status: 'idle' }
+/** @param {object} session @param {string} [id] @returns {object} */
+function fakeAgent(session, id = session.id) {
+  return { id, session, status: 'idle' }
 }
 
 /** @param {string} type @param {...any} args */
@@ -174,30 +172,67 @@ async function exec(name, agent, args) {
   })
 }
 
+/**
+ * Seed one legacy v0.1.0 workspace journal into the same store root, with one
+ * entry inside. Returns the entry id.
+ * @returns {Promise<string>}
+ */
+async function seedLegacyWorkspace() {
+  const config = resolveConfig({ store: { dir: paths.store } }).config
+  const deps = {
+    fs,
+    fsSync,
+    now: () => Date.now(),
+    random: Math.random,
+    pid: 12345,
+  }
+  const store = new JournalStore({ config, logger: null, deps })
+  await store.init()
+  const journal = await store.openWorkspace(LEGACY_WS_KEY, {
+    canonicalPath: paths.legacyDir,
+    label: path.basename(paths.legacyDir),
+  })
+  const stored = await journal.append({
+    v: 1,
+    type: 'entry',
+    id: 'cnf_01JBQ8Z4K7F1G2H3J4K5M6N7P8',
+    ws: LEGACY_WS_KEY,
+    seq: '01JBQ8Z4K7F1G2H3J4K5M6N7P8',
+    ts: '2026-01-01T00:00:00.000Z',
+    kind: 'decision',
+    title: 'Legacy workspace decision',
+    body: 'Written before v0.2.0 in a per-workspace journal.',
+    author: { sessionId: 'session-legacy', title: 'Legacy session', origin: 'agent' },
+  })
+  await store.close()
+  return stored.id
+}
+
 before(async () => {
-  paths.dir = await fs.mkdtemp(path.join(os.tmpdir(), 'confluence-integration-'))
-  paths.project = path.join(paths.dir, 'project')
+  paths.dir = await fs.mkdtemp(path.join(os.tmpdir(), 'confluence-universal-'))
+  paths.projectA = path.join(paths.dir, 'project-a')
+  paths.projectB = path.join(paths.dir, 'project-b')
+  paths.legacyDir = path.join(paths.dir, 'legacy-project')
   paths.store = path.join(paths.dir, 'store')
-  await fs.mkdir(paths.project, { recursive: true })
+  await fs.mkdir(paths.projectA, { recursive: true })
+  await fs.mkdir(paths.projectB, { recursive: true })
+  await fs.mkdir(paths.legacyDir, { recursive: true })
+
+  paths.legacyEntryId = await seedLegacyWorkspace()
 
   const { ctx } = createFakeCtx()
-  const workspaceResolver = {
-    async resolve() {
-      return { key: WORKSPACE_KEY, canonicalPath: paths.project, label: 'project' }
-    },
-  }
-  const { resolveConfig } = await import('../lib/config.js')
-  const { config } = resolveConfig({ store: { dir: paths.store, pollMs: 4000 } })
-  services = await applyWithDeps(ctx, config, { workspaceResolver })
+  const originResolver = createOriginResolver({ workingDirectory: { get: () => undefined }, fs })
+  services = await applyWithDeps(
+    ctx,
+    { store: { dir: paths.store, pollMs: 4000 }, privacy: { privateSessions: ['session-private'] } },
+    { originResolver },
+  )
 })
 
 after(async () => {
   try {
     if (services && typeof services.disposeAsync === 'function') {
-      // Bound teardown so a stuck watcher can never hang the test process forever.
       await Promise.race([services.disposeAsync(), new Promise((resolve) => setTimeout(resolve, 3000))])
-    } else if (services && typeof services.dispose === 'function') {
-      services.dispose()
     }
   } catch {
     // Teardown is best-effort.
@@ -206,11 +241,11 @@ after(async () => {
   try {
     if (paths.dir !== '') await fs.rm(paths.dir, { recursive: true, force: true })
   } catch {
-    // Best-effort cleanup of the temp tree.
+    // Best-effort cleanup.
   }
 })
 
-test('INT-01 activation registers six tools, one pulse context and four panel routes', () => {
+test('INT-01 activation registers six tools, one global pulse and three panel routes', () => {
   assert.deepEqual(
     [...captured.tools.keys()].sort(),
     [
@@ -226,87 +261,141 @@ test('INT-01 activation registers six tools, one pulse context and four panel ro
   assert.equal(captured.prompts[0].name, 'confluence:pulse')
   assert.equal(captured.prompts[0].interpolate, false)
   assert.equal(captured.prompts[0].required, false)
-  assert.deepEqual(
-    [...captured.routes.keys()].sort(),
-    ['/confluence/panel/entry', '/confluence/panel/overview', '/confluence/panel/ping', '/confluence/panel/workspaces'],
-  )
+  assert.deepEqual([...captured.routes.keys()].sort(), [
+    '/confluence/panel/entry',
+    '/confluence/panel/overview',
+    '/confluence/panel/ping',
+  ])
+  assert.equal(services.scope.key, 'global')
+  assert.equal(services.globalScopeKey, GLOBAL_SCOPE_KEY)
 })
 
-test('INT-02 a post from session A is visible to session B and returns a through cursor', async () => {
-  const agentA = fakeAgent('session-a')
-  const agentB = fakeAgent('session-b')
+test('INT-02 a post from workspace A is visible to a session in workspace B (universal memory)', async () => {
+  const agentA = fakeAgent(fakeSession('session-a', paths.projectA))
+  const agentB = fakeAgent(fakeSession('session-b', paths.projectB))
   emit('agent/created', { agent: agentA })
   emit('agent/created', { agent: agentB })
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  await services.services.facade.ensureReady(agentA)
+  await services.services.facade.ensureReady(agentB)
+  services.services.pulse.refresh()
 
   const posted = await exec('confluence_post', agentA, {
     kind: 'gotcha',
-    title: 'Windows rename retries wrap in EPERM',
-    body: 'Wrap rename in a retry loop because scanners hold handles.',
-    tags: ['windows', 'fs'],
-    files: ['src/fs/rename.ts'],
+    title: 'Universal memory gotcha',
+    body: 'Published from project-a and visible from project-b.',
+    tags: ['universal', 'e2e'],
+    files: ['src/universal.ts'],
   })
-  assert.equal(typeof posted.id, 'string')
   assert.match(posted.id, /^cnf_[0-9A-HJKMNP-TV-Z]{26}$/)
-  assert.equal(posted.kind, 'gotcha')
 
+  const view = services.services.facade.boardView(agentB)
+  const titles = view.entries.map((entry) => entry.title)
+  assert.ok(titles.includes('Universal memory gotcha'), 'session B board misses session A note')
+  const entry = view.entries.find((row) => row.title === 'Universal memory gotcha')
+  assert.equal(entry.workspaceLabel, 'project-a', 'provenance label is the source workspace basename')
+  assert.equal(entry.authorTitle, 'title:session-a')
+
+  // The one global journal holds the record (universal scope directory).
+  const globalDir = path.join(paths.store, 'workspaces', GLOBAL_SCOPE_KEY)
+  const files = await fs.readdir(globalDir)
+  assert.ok(files.some((name) => /^journal\.[0-9]+-[0-9a-f]{8}\.v1\.jsonl$/.test(name)))
+
+  // A tool call from B renders the same note.
   const board = await exec('confluence_board', agentB, { limit: 5 })
-  const raw = typeof board === 'string' ? board : JSON.stringify(board)
-  assert.match(raw, /Windows rename retries wrap in EPERM/)
-  const through = board && (board.through ?? board.through_seq)
-  assert.match(String(through), /^[0-9A-HJKMNP-TV-Z]{26}$/)
-  const rendered = tool('confluence_board').output.render({ limit: 5 }, board)
-  assert.match(JSON.stringify(rendered), /Windows rename retries wrap in EPERM/)
+  const rendered = JSON.stringify(tool('confluence_board').output.render({ limit: 5 }, board))
+  assert.match(rendered, /Universal memory gotcha/)
+  assert.match(rendered, /through=[0-9A-HJKMNP-TV-Z]{26}/)
+})
 
-  // The journal is on disk under the configured store root.
-  const dirs = await fs.readdir(path.join(paths.store, 'workspaces', WORKSPACE_KEY))
-  assert.ok(dirs.some((name) => name.startsWith('journal.') && name.endsWith('.v1.jsonl')))
+test('INT-03 legacy per-workspace v1 data is merged read-only with provenance', async () => {
+  const agentB = fakeAgent(fakeSession('session-b2', paths.projectB))
+  emit('agent/created', { agent: agentB })
+  await services.services.facade.ensureReady(agentB)
+  const view = services.services.facade.boardView(agentB)
+  const legacy = view.entries.find((row) => row.title === 'Legacy workspace decision')
+  assert.ok(legacy, 'legacy v1 entry is missing from the universal board')
+  assert.equal(legacy.workspaceLabel, 'legacy-project')
+  const thread = await exec('confluence_read', agentB, { ref: paths.legacyEntryId })
+  assert.match(JSON.stringify(thread), /Legacy workspace decision/)
+})
 
-  // Pulse for session B lists A's note (same workspace, different session).
-  await new Promise((resolve) => setTimeout(resolve, 50))
+test('INT-04 the passive pulse is global and names the source session/entry', async () => {
+  const agentB = fakeAgent(fakeSession('session-b3', paths.projectB))
+  emit('agent/created', { agent: agentB })
+  await services.services.facade.ensureReady(agentB)
+  services.services.pulse.refresh()
   const pulseText = captured.prompts[0].text({ agent: agentB })
-  assert.match(pulseText, /Windows rename retries wrap in EPERM/)
-  assert.match(pulseText, /<confluence-workspace/)
+  assert.match(pulseText, /<confluence-memory[^>]*scope="global"/)
+  assert.match(pulseText, /Universal memory gotcha/)
+  assert.doesNotMatch(pulseText, /<confluence-workspace/)
 })
 
-test('INT-03 panel overview exposes the post read-only, with no body in the list view', async () => {
-  const route = captured.routes.get('/confluence/panel/overview')
-  assert.ok(route)
-  const payload = await callRoute(route, `/confluence/panel/overview?ws=${WORKSPACE_KEY}`)
-  assert.equal(payload.ok, true)
-  assert.equal(payload.workspace.key, WORKSPACE_KEY)
-  assert.ok(Array.isArray(payload.entries) && payload.entries.length >= 1)
-  const titles = payload.entries.map((entry) => entry.title).join('\n')
-  assert.match(titles, /Windows rename retries wrap in EPERM/)
-  assert.equal(payload.entries[0].body, undefined)
-})
-
-test('INT-04 reply resolves a question and both tools share the thread', async () => {
-  const agentA = fakeAgent('session-a')
-  const agentB = fakeAgent('session-b')
+test('INT-05 reply/resolve works on the universal board', async () => {
+  const agentA = fakeAgent(fakeSession('session-a2', paths.projectA))
+  const agentB = fakeAgent(fakeSession('session-b4', paths.projectB))
+  emit('agent/created', { agent: agentA })
+  emit('agent/created', { agent: agentB })
+  await services.services.facade.ensureReady(agentA)
   const question = await exec('confluence_post', agentA, {
     kind: 'question',
-    title: 'Does the v2 API still need the legacy flag?',
-    body: 'Please confirm before I delete it.',
+    title: 'Universal question?',
+    body: 'Does this cross workspaces?',
   })
   const reply = await exec('confluence_reply', agentB, {
     id: question.id,
-    body: 'Yes, keep it until 2.1.',
+    body: 'Yes, it does.',
     resolves: true,
   })
   assert.equal(reply.resolved, true)
   assert.equal(reply.thread_id, question.id)
-
   const read = await exec('confluence_read', agentA, { ref: question.id })
-  const raw = typeof read === 'string' ? read : JSON.stringify(read)
-  assert.match(raw, /Yes, keep it until 2\.1/)
+  assert.match(JSON.stringify(read), /Yes, it does\./)
+})
+
+test('INT-06 panel overview/entry serve one global scope with provenance labels', async () => {
+  const overviewRoute = captured.routes.get('/confluence/panel/overview')
+  assert.ok(overviewRoute)
+  const payload = await callRoute(overviewRoute, '/confluence/panel/overview?limit=50')
+  assert.equal(payload.ok, true)
+  assert.deepEqual(payload.scope, { key: 'global', label: 'All sessions' })
+  assert.ok(Array.isArray(payload.entries))
+  const entry = payload.entries.find((row) => row.title === 'Universal memory gotcha')
+  assert.ok(entry, 'global note missing from panel overview')
+  assert.equal(entry.workspaceLabel, 'project-a')
+  assert.equal(entry.body, undefined, 'list view never carries bodies')
+
+  const entryRoute = captured.routes.get('/confluence/panel/entry')
+  const detail = await callRoute(entryRoute, `/confluence/panel/entry?id=${encodeURIComponent(paths.legacyEntryId)}`)
+  assert.equal(detail.ok, true)
+  assert.match(detail.entry.title, /Legacy workspace decision/)
+  assert.equal(detail.entry.workspaceLabel, 'legacy-project')
+})
+
+test('INT-07 privacy.privateSessions opts a session out of every tool (review R-01)', async () => {
+  const privateAgent = fakeAgent(fakeSession('session-private', paths.projectA))
+  emit('agent/created', { agent: privateAgent })
+  await services.services.facade.ensureReady(privateAgent).catch(() => {})
+  const calls = [
+    ['confluence_board', { limit: 5 }],
+    ['confluence_search', { query: 'legacy' }],
+    ['confluence_read', { ref: paths.legacyEntryId }],
+    ['confluence_recall', { query: 'legacy' }],
+    ['confluence_post', { kind: 'finding', title: 'private write' }],
+    ['confluence_reply', { id: paths.legacyEntryId, body: 'private reply' }],
+  ]
+  for (const [name, args] of calls) {
+    await assert.rejects(() => exec(name, privateAgent, args), /private|UNAVAILABLE/i, `${name} must be disabled`)
+  }
+  assert.throws(() => services.services.facade.boardView(privateAgent), /private/i)
+  // Non-private sessions keep working.
+  const normal = fakeAgent(fakeSession('session-normal', paths.projectB))
+  const board = await exec('confluence_board', normal, { limit: 5 })
+  assert.equal(board.workspace, 'All sessions')
 })
 
 // ── fake HTTP route invocation ───────────────────────────────────────────
 
 /**
- * Invoke a captured `webServer.register({kind,path,handler})` handler with a
- * minimal IncomingMessage/ServerResponse pair and return the parsed JSON body.
  * @param {{handler: Function}} route
  * @param {string} url
  * @returns {Promise<any>}
@@ -321,7 +410,6 @@ async function callRoute(route, url) {
   }
   const chunks = []
   let statusCode = 200
-  const headers = {}
   const res = {
     get statusCode() {
       return statusCode
@@ -329,9 +417,7 @@ async function callRoute(route, url) {
     set statusCode(value) {
       statusCode = value
     },
-    setHeader(name, value) {
-      headers[String(name).toLowerCase()] = value
-    },
+    setHeader() {},
     end(body) {
       if (body !== undefined) chunks.push(Buffer.from(body))
     },
@@ -340,9 +426,5 @@ async function callRoute(route, url) {
     },
   }
   await route.handler(req, res)
-  const text = Buffer.concat(chunks).toString('utf8')
-  return JSON.parse(text)
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
-
-
-
